@@ -1,1 +1,24 @@
-# Repository-specific ignore rules will be added with implementation scaffolding.
+# Rust / Cargo build output
+target/
+*.rs.bk
+
+# Test and coverage output
+*.profraw
+*.profdata
+/coverage/
+
+# Local environment and credentials (PAT, OAuth, encryption keys)
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+/secrets/
+
+# Editors
+.idea/
+.vscode/
+*.swp
+
+# OS
+.DS_Store
