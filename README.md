@@ -1,10 +1,21 @@
 # Ratatoskr GitHub
 
-`ratatoskr-github` is the GitHub Catalog bounded context for Ratatoskr Next. It records what repositories a user has starred or chosen to track, preserves GitHub metadata and list membership, coordinates repository analysis, and publishes the desired backup state consumed by Git Vault.
+`ratatoskr-github` is the GitHub Catalog bounded context for Ratatoskr. It records what repositories a user has starred or chosen to track, preserves GitHub metadata and list membership, coordinates repository analysis, and publishes the desired backup state consumed by Git Vault.
 
 > **Status:** architecture bootstrap. OAuth, synchronization, persistence, APIs, and event handlers described below are planned and are not implemented yet.
 
-## Role in Ratatoskr Next
+> [!IMPORTANT]
+> **Ratatoskr is in development.** No database holds data that has to survive a schema change.
+> While this status holds, these two rules replace what the documents below plan:
+>
+> - the API and the database keep their first version. There is no `v2` and no later major
+>   version.
+> - the database has no migrations. One schema definition exists, and a schema change edits it in
+>   place.
+>
+> Only the repository owner changes this status.
+
+## Role in Ratatoskr
 
 This service answers questions such as:
 
