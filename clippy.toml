@@ -1,0 +1,19 @@
+# Size limits and environment discipline for this workspace.
+#
+# Each threshold is the worst case measured in this tree, not an ambition: a
+# regression fails the lint instead of silently raising the number. An
+# exception must be a site-level `#[expect(...)]` with a reason, never a
+# raised threshold here.
+msrv = "1.97"
+allow-unwrap-in-tests = true
+allow-expect-in-tests = true
+allow-indexing-slicing-in-tests = true
+
+disallowed-methods = [
+  { path = "std::env::var", reason = "configuration is read only by ratatoskr_github_catalog::config" },
+  { path = "std::env::var_os", reason = "configuration is read only by ratatoskr_github_catalog::config" },
+]
+
+too-many-lines-threshold = 100
+too-many-arguments-threshold = 7
+excessive-nesting-threshold = 5

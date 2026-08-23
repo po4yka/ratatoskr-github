@@ -1,0 +1,16 @@
+services:
+  postgres:
+    image: postgres:17
+    container_name: ratatoskr-github-postgres
+    environment:
+      POSTGRES_USER: github
+      POSTGRES_PASSWORD: github
+      POSTGRES_DB: github
+      POSTGRES_INITDB_ARGS: "--locale-provider=icu --icu-locale=und-x-icu --encoding=UTF8"
+    ports:
+      - "127.0.0.1:5435:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U github -d github && psql -U github -d github -c 'select 1' > /dev/null"]
+      interval: 1s
+      timeout: 5s
+      retries: 30

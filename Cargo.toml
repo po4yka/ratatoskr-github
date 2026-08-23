@@ -1,0 +1,69 @@
+[workspace]
+resolver = "3"
+members = [
+    "crates/catalog",
+    "services/catalog",
+]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.97"
+license = "BSD-3-Clause"
+repository = "https://github.com/po4yka/ratatoskr-github"
+
+[workspace.dependencies]
+ratatoskr-github-catalog = { version = "=0.1.0", path = "crates/catalog" }
+
+axum = { version = "=0.8.9", default-features = false, features = ["http1", "tokio"] }
+http-body-util = "=0.1.5"
+serde = { version = "=1.0.229", features = ["derive"] }
+serde_json = "=1.0.151"
+sqlx = { version = "=0.8.6", default-features = false, features = [
+    "runtime-tokio",
+    "tls-rustls-ring",
+    "postgres",
+    "uuid",
+] }
+thiserror = "=2.0.20"
+tokio = { version = "=1.53.1", features = [
+    "fs",
+    "io-util",
+    "macros",
+    "net",
+    "rt-multi-thread",
+    "signal",
+    "time",
+] }
+tower = { version = "=0.5.3", features = ["util"] }
+tracing = "=0.1.44"
+tracing-subscriber = { version = "=0.3.23", default-features = false, features = [
+    "fmt",
+    "json",
+    "registry",
+] }
+uuid = { version = "=1.24.1", features = ["v7"] }
+
+[workspace.lints.rust]
+unsafe_code = "forbid"
+missing_docs = "deny"
+missing_debug_implementations = "deny"
+unreachable_pub = "deny"
+
+[workspace.lints.clippy]
+pedantic = { level = "warn", priority = -1 }
+unwrap_used = "deny"
+expect_used = "deny"
+panic = "deny"
+missing_errors_doc = "deny"
+missing_panics_doc = "deny"
+dbg_macro = "deny"
+todo = "deny"
+print_stdout = "deny"     # startup failures go to stderr; a stray println bypasses the subscriber
+indexing_slicing = "deny" # `v[i]` and `&s[a..b]` panicking out of bounds
+string_slice = "deny"     # `&s[..n]` panicking because n is not a UTF-8 char boundary
+
+# Release keeps the default `unwind` panic strategy ON PURPOSE: `panic = "abort"`
+# silently disables catch-unwind-based error responses.
+[profile.release]
+debug = 1 # line tables only: a usable backtrace in the ERROR log, no full debuginfo

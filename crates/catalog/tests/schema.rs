@@ -1,0 +1,100 @@
+//! Current GitHub Catalog schema integration behavior.
+
+use ratatoskr_github_catalog::test_support::TestDatabase;
+use sqlx::Row as _;
+
+#[tokio::test]
+async fn owned_schema_applies_twice_without_cross_schema_objects()
+-> Result<(), Box<dyn std::error::Error>> {
+    let database = TestDatabase::create().await?;
+    database.database.apply_schema().await?;
+
+    let rows = sqlx::query(
+        "select table_name from information_schema.tables
+         where table_schema = 'github_catalog' order by table_name",
+    )
+    .fetch_all(database.database.pool())
+    .await?;
+    let tables = rows
+        .into_iter()
+        .map(|row| row.try_get::<String, _>("table_name"))
+        .collect::<Result<Vec<_>, _>>()?;
+    assert_eq!(
+        tables,
+        [
+            "backup_policies",
+            "current_star_state",
+            "github_accounts",
+            "inbox_events",
+            "outbox_events",
+            "repositories",
+            "repository_aliases",
+            "repository_watches",
+            "star_list_memberships",
+            "star_lists",
+            "star_observations",
+            "sync_checkpoints",
+            "sync_runs",
+        ]
+    );
+
+    let cross_schema_count: i64 = sqlx::query_scalar(
+        "select count(*) from information_schema.tables
+         where table_schema not in ('github_catalog', 'information_schema', 'pg_catalog')",
+    )
+    .fetch_one(database.database.pool())
+    .await?;
+    assert_eq!(cross_schema_count, 0);
+
+    database.cleanup().await?;
+    Ok(())
+}
+
+#[tokio::test]
+async fn placeholder_tables_carry_the_decided_identity_rules()
+-> Result<(), Box<dyn std::error::Error>> {
+    let database = TestDatabase::create().await?;
+
+    // Stable GitHub numeric identity: two rows cannot share one provider ID.
+    let inserted = sqlx::query(
+        "insert into github_catalog.repositories
+             (repository_id, provider_repository_id)
+         values ($1, $2)",
+    )
+    .bind(uuid::Uuid::now_v7())
+    .bind(1_i64)
+    .execute(database.database.pool())
+    .await?;
+    assert_eq!(inserted.rows_affected(), 1);
+    let duplicate_provider_id = sqlx::query(
+        "insert into github_catalog.repositories
+             (repository_id, provider_repository_id)
+         values ($1, $2)",
+    )
+    .bind(uuid::Uuid::now_v7())
+    .bind(1_i64)
+    .execute(database.database.pool())
+    .await;
+    assert!(
+        duplicate_provider_id.is_err(),
+        "provider repository id must be unique"
+    );
+
+    // An unstarred projection carries its removal evidence.
+    let unstarred_without_evidence = sqlx::query(
+        "insert into github_catalog.current_star_state
+             (account_id, repository_id, starred, last_observed_at)
+         values ($1, $2, false, now())",
+    )
+    .bind(uuid::Uuid::now_v7())
+    .bind(uuid::Uuid::now_v7())
+    .execute(database.database.pool())
+    .await;
+    assert!(
+        unstarred_without_evidence.is_err(),
+        "an unstarred state must record observed_unstarred_at"
+    );
+
+    database.cleanup().await?;
+    Ok(())
+}

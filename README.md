@@ -2,7 +2,7 @@
 
 `ratatoskr-github` is the GitHub Catalog bounded context for Ratatoskr. It records what repositories a user has starred or chosen to track, preserves GitHub metadata and list membership, coordinates repository analysis, and publishes the desired backup state consumed by Git Vault.
 
-> **Status:** architecture bootstrap. OAuth, synchronization, persistence, APIs, and event handlers described below are planned and are not implemented yet.
+> **Status:** implementation plan item 1 is complete: a Rust service runs locally with typed strict configuration, structured telemetry, operator health routes (`/live`, `/ready`, `/metrics`, `/version`), and the first-version `github_catalog` schema applied at startup. Accounts and credentials, synchronization, mutations, public APIs, and event handlers described below are planned and are not implemented yet.
 
 > [!IMPORTANT]
 > **Ratatoskr is in development.** No database holds data that has to survive a schema change.
@@ -338,4 +338,4 @@ Every sync run records mode, cursor/high-water mark, pages completed, completene
 
 ## Project status
 
-This README defines the intended GitHub Catalog architecture. It does not claim that account connections, synchronization, mutations, or database models already exist.
+The process foundation (configuration, telemetry, operator health, owned schema) is implemented and gated by CI. Account connections, synchronization, mutations, and database models for those behaviors do not exist yet; the sections above describe the intended GitHub Catalog architecture.

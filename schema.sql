@@ -1,0 +1,171 @@
+-- Current GitHub Catalog-owned PostgreSQL schema. Development has no migration history: a schema
+-- change edits this file and test databases are created from it.
+--
+-- First-version placeholder bodies: each table carries its identity, status vocabulary, and the
+-- invariants already decided by the bounded context. Later implementation plan items extend these
+-- definitions in place; nothing here implies migration history.
+
+create schema if not exists github_catalog;
+
+comment on schema github_catalog is 'State owned exclusively by ratatoskr-github.';
+
+create table if not exists github_catalog.github_accounts (
+    account_id uuid primary key,
+    owner_ref  text not null,
+    status     text not null,
+    created_at timestamptz not null default now(),
+    constraint github_accounts_owner_ref_check
+        check (owner_ref ~ '^[a-z][a-z0-9-]{1,63}$'),
+    constraint github_accounts_status_check
+        check (status in ('connected', 'reauthorization_required', 'revoked'))
+);
+
+-- GitHub's numeric repository ID is the stable upstream identity; owner/name and URLs are mutable
+-- aliases recorded in repository_aliases and must never serve as the primary key.
+create table if not exists github_catalog.repositories (
+    repository_id          uuid primary key,
+    provider_repository_id bigint not null unique,
+    created_at             timestamptz not null default now(),
+    updated_at             timestamptz not null default now()
+);
+
+create table if not exists github_catalog.repository_aliases (
+    alias_id      uuid primary key,
+    repository_id uuid not null references github_catalog.repositories (repository_id),
+    alias_kind    text not null,
+    alias_value   text not null,
+    created_at    timestamptz not null default now(),
+    constraint repository_aliases_kind_check
+        check (alias_kind in ('owner_name', 'html_url', 'clone_url')),
+    constraint repository_aliases_identity_key
+        unique (repository_id, alias_kind, alias_value)
+);
+
+create table if not exists github_catalog.sync_runs (
+    sync_run_id uuid primary key,
+    mode        text not null,
+    status      text not null,
+    started_at  timestamptz not null default now(),
+    finished_at timestamptz,
+    constraint sync_runs_mode_check check (mode in ('incremental', 'full')),
+    constraint sync_runs_status_check
+        check (status in ('running', 'completed', 'failed', 'cancelled')),
+    constraint sync_runs_finish_matches_terminal_status
+        check ((status in ('completed', 'failed', 'cancelled')) = (finished_at is not null))
+);
+
+create table if not exists github_catalog.sync_checkpoints (
+    checkpoint_id uuid primary key,
+    sync_run_id   uuid not null references github_catalog.sync_runs (sync_run_id),
+    recorded_at   timestamptz not null default now()
+);
+
+-- Observations are append-only evidence; the projection lives in current_star_state.
+create table if not exists github_catalog.star_observations (
+    observation_id       uuid primary key,
+    account_id           uuid not null references github_catalog.github_accounts (account_id),
+    repository_id        uuid not null references github_catalog.repositories (repository_id),
+    starred              boolean not null,
+    provider_starred_at  timestamptz,
+    observed_at          timestamptz not null,
+    constraint star_observations_provider_time_is_evidence
+        check ((starred = false) or (provider_starred_at is not null))
+);
+
+-- The exact upstream unstar time is unknown, so removal evidence uses observed_unstarred_at and
+-- an unstarred state must carry the snapshot that established it.
+create table if not exists github_catalog.current_star_state (
+    account_id            uuid not null references github_catalog.github_accounts (account_id),
+    repository_id         uuid not null references github_catalog.repositories (repository_id),
+    starred               boolean not null,
+    last_observed_at      timestamptz not null,
+    observed_unstarred_at timestamptz,
+    evidence_run_id       uuid references github_catalog.sync_runs (sync_run_id),
+    primary key (account_id, repository_id),
+    constraint current_star_state_removal_evidence_check
+        check ((starred = true) or (observed_unstarred_at is not null))
+);
+
+create table if not exists github_catalog.star_lists (
+    list_id          uuid primary key,
+    account_id       uuid not null references github_catalog.github_accounts (account_id),
+    provider_list_id text not null,
+    name             text not null,
+    created_at       timestamptz not null default now(),
+    constraint star_lists_provider_identity_key unique (account_id, provider_list_id)
+);
+
+create table if not exists github_catalog.star_list_memberships (
+    list_id       uuid not null references github_catalog.star_lists (list_id),
+    repository_id uuid not null references github_catalog.repositories (repository_id),
+    added_at      timestamptz not null,
+    primary key (list_id, repository_id)
+);
+
+create table if not exists github_catalog.repository_watches (
+    watch_id     uuid primary key,
+    repository_id uuid not null references github_catalog.repositories (repository_id),
+    trigger_type text not null,
+    enabled      boolean not null default true,
+    created_at   timestamptz not null default now(),
+    constraint repository_watches_trigger_type_check check (trigger_type in (
+        'readme_changed',
+        'release_published',
+        'issue_opened',
+        'archived_or_deleted',
+        'visibility_changed',
+        'activity_threshold'
+    ))
+);
+
+-- Desired backup policy only: this context never owns physical backup state.
+create table if not exists github_catalog.backup_policies (
+    backup_policy_id uuid primary key,
+    repository_id    uuid not null unique references github_catalog.repositories (repository_id),
+    policy_level     text not null,
+    pinned           boolean not null default false,
+    updated_at       timestamptz not null default now(),
+    constraint backup_policies_level_check check (policy_level in (
+        'none',
+        'metadata_only',
+        'git_mirror',
+        'git_mirror_with_lfs',
+        'complete_archive'
+    ))
+);
+
+create table if not exists github_catalog.outbox_events (
+    message_id   uuid primary key,
+    subject      text not null,
+    payload      jsonb not null,
+    created_at   timestamptz not null default now(),
+    published_at timestamptz,
+    constraint outbox_subject_is_known check (subject in (
+        'github.sync.requested.v1',
+        'github.repository.observed.v1',
+        'github.star.observed.v1',
+        'github.star.removed.v1',
+        'github.backup_policy.changed.v1',
+        'vault.target.desired.v1',
+        'knowledge.repository_analysis.requested.v1'
+    )),
+    constraint outbox_payload_is_object check (jsonb_typeof(payload) = 'object')
+);
+
+create table if not exists github_catalog.inbox_events (
+    message_id  uuid primary key,
+    subject     text not null,
+    payload     jsonb not null,
+    created_at  timestamptz not null default now(),
+    consumed_at timestamptz,
+    constraint inbox_subject_is_known check (subject in (
+        'github.sync.requested.v1',
+        'github.repository.observed.v1',
+        'github.star.observed.v1',
+        'github.star.removed.v1',
+        'github.backup_policy.changed.v1',
+        'vault.target.desired.v1',
+        'knowledge.repository_analysis.requested.v1'
+    )),
+    constraint inbox_payload_is_object check (jsonb_typeof(payload) = 'object')
+);

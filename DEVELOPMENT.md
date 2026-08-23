@@ -1,13 +1,40 @@
 # Developing Ratatoskr GitHub
 
-> Status: Proposed  
-> Last reviewed: 2026-08-20
+> Status: Active  
+> Last reviewed: 2026-08-23
 
-Architecture bootstrap: the Rust service, provider client, OAuth/PAT flows, migrations, and sync workers are not implemented.
+The service foundation is implemented: a Rust workspace with typed configuration, structured telemetry, operator health routes, and the first-version `github_catalog` schema. Accounts and credentials, synchronization, mutations, and event handling are not implemented.
 
-## Intended toolchain
+## Toolchain and gate
 
-Rust/Tokio, Reqwest/Rustls, SQLx/PostgreSQL, GraphQL where required, NATS JetStream, typed encrypted credentials, WireMock/provider fixtures, tracing, and testcontainers.
+`rust-toolchain.toml` pins Rust 1.97. Every command uses the committed lock file.
+
+### Rust - the CI gate
+
+```bash
+cargo fetch --locked
+cargo deny --locked check
+cargo fmt --all -- --check
+cargo clippy --workspace --all-targets --locked -- -D warnings
+cargo build --workspace --locked
+cargo test --workspace --locked
+cargo test --workspace --locked --doc
+cargo build --workspace --locked --release
+```
+
+The file-size ratchet is the one check that Cargo cannot express:
+
+```bash
+git ls-files -z "*.rs" | xargs -0 -r wc -l | awk '$2 != "total" && $1 > 850 { print; bad = 1 } END { exit bad }'
+```
+
+Database tests create disposable databases from the current `schema.sql`. Locally they need the compose stack:
+
+```bash
+docker compose up -d --wait
+```
+
+Tests use `GITHUB_CATALOG_TEST_DATABASE_URL`, which defaults to `postgres://github:github@127.0.0.1:5435/github`; CI provisions its own service container.
 
 ## Code size limits
 

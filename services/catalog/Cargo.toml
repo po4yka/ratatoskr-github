@@ -1,0 +1,31 @@
+[package]
+name = "ratatoskr-github-catalog-service"
+description = "Ratatoskr GitHub Catalog service process."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[lib]
+name = "ratatoskr_github_catalog_service"
+path = "src/lib.rs"
+
+[[bin]]
+name = "ratatoskr-github-catalog"
+path = "src/main.rs"
+
+[dependencies]
+axum.workspace = true
+ratatoskr-github-catalog = { path = "../../crates/catalog" }
+thiserror.workspace = true
+tokio.workspace = true
+
+[dev-dependencies]
+http-body-util.workspace = true
+ratatoskr-github-catalog = { path = "../../crates/catalog", features = ["test-support"] }
+sqlx.workspace = true
+tower.workspace = true
+
+[lints]
+workspace = true
