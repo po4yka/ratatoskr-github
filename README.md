@@ -62,13 +62,13 @@ A repository may be:
 
 The local model converges these observations on the stable GitHub ID rather than creating duplicate records.
 
-## Planned data model
+## Current foundation schema
 
-The service owns a `github_catalog.*` PostgreSQL schema. Expected tables include:
+The service owns a `github_catalog.*` PostgreSQL schema. Its current placeholder tables encode the
+identities and constraints already decided for later behavior:
 
 ```text
 github_accounts
-github_credentials
 repositories
 repository_aliases
 star_observations
@@ -79,11 +79,12 @@ repository_watches
 backup_policies
 sync_runs
 sync_checkpoints
-rate_limit_state
-analysis_references
 outbox_events
 inbox_events
 ```
+
+Credential storage, rate-limit state, analysis references, and the behavior behind the placeholder
+tables remain planned.
 
 Typical repository metadata includes:
 
@@ -292,23 +293,14 @@ Internal provider details are not exposed as stable public contracts.
 
 ## Observability
 
-Core metrics include:
+The implemented foundation exports only:
 
 ```text
-github_sync_duration
-github_sync_repositories_seen
-github_full_snapshot_age
-github_false_removal_guard_skips
-github_rate_limit_remaining
-github_rate_limit_waits
-github_conditional_not_modified
-github_metadata_changes
-github_analysis_requests
-github_mutation_failures
-github_reauth_required
+github_catalog_process_info
 ```
 
-Every sync run records mode, cursor/high-water mark, pages completed, completeness, warnings, and resulting state transitions.
+Sync, snapshot, rate-limit, mutation, and analysis metrics remain planned with the behavior that
+would emit them.
 
 ## Non-goals
 
@@ -320,21 +312,17 @@ Every sync run records mode, cursor/high-water mark, pages completed, completene
 - Treating repository names as stable identities.
 - Inferring exact unstar timestamps when GitHub does not provide them.
 
-## Initial milestones
+## Implementation plan
 
-1. Establish account, credential, repository, and sync schemas.
-2. Implement minimal PAT validation and encrypted storage.
-3. Implement incremental and full starred-repository snapshots.
-4. Add metadata and README conditional retrieval.
-5. Add native star-list reconciliation.
-6. Add manual `metadata`, `track`, and `star` workflows.
-7. Publish desired backup policy to Git Vault.
-8. Integrate repository analysis with Knowledge.
-9. Add watches, rate-limit diagnostics, and shadow comparison with the legacy system.
+The authoritative sequence is [`docs/IMPLEMENTATION_PLAN.md`](docs/IMPLEMENTATION_PLAN.md). Item 1,
+the service foundation, is implemented. Items 2 through 10 remain planned.
 
 ## Workspace integration
 
-`ratatoskr-workspace` pins Catalog with compatible contracts, Vault, Knowledge, Telegram, Platform, and client commits. Cross-repository changes are coordinated through changesets; this repository remains independently buildable and testable using recorded GitHub fixtures and mock servers.
+The planned `ratatoskr-workspace` topology will pin Catalog with compatible contracts, Vault,
+Knowledge, Telegram, Platform, and client commits. No workspace pin or GitHub-to-Vault integration
+profile exists yet. Cross-repository changes are coordinated through changesets; this repository
+remains independently buildable and testable.
 
 ## Project status
 

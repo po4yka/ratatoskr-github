@@ -1,5 +1,7 @@
 # GitHub Catalog service foundation
 
+## Purpose
+
 The process foundation of Ratatoskr GitHub Catalog: strict finite configuration, one-time structured telemetry, operator health routes, application of the owned first-version `github_catalog` schema, and the gates that keep the tree verifiable.
 
 ## Requirements

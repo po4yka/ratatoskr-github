@@ -38,7 +38,8 @@ Tests use `GITHUB_CATALOG_TEST_DATABASE_URL`, which defaults to `postgres://gith
 
 ## Code size limits
 
-There is no code here yet, so no limit is enforced yet. The commit that brings the first manifest brings the configuration that carries the limits with it: `clippy.toml` beside a `Cargo.toml`, `eslint.config.js` beside a `package.json`. `fleet.yml` fails the gate when a manifest arrives without one, so the rule has a check behind it and not only this paragraph.
+`clippy.toml` enforces the current function, nesting, signature, and type limits. CI also rejects a
+tracked Rust source file above 850 lines.
 
 `ratatoskr-workspace/docs/QUALITY_GATES.md` holds the numbers the repositories with code use today, the command that measured each one, and the limits that were rejected with the reason. Read it before you choose numbers, then measure this tree. Each limit is set at the worst case the tree already has, so that the check fails on a regression and not on work that has not been done yet.
 
@@ -50,7 +51,9 @@ There is no code here yet, so no limit is enforced yet. The commit that brings t
 4. Add pagination, checkpoint, redelivery, partial-success, and rate-limit tests.
 5. Delegate Git execution to Vault and analysis to Knowledge through contracts.
 
-The first scaffold PR must specify exact build/test/migration/local-server commands. Default tests use recorded/synthetic fixtures, never personal tokens.
+The service-foundation change supplied the exact build, test, current-schema, and local-stack
+commands above. This development repository has no database migrations. Default tests use
+synthetic fixtures and never personal tokens.
 
 ## What a clone needs before you plan a change
 

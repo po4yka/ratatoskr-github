@@ -8,7 +8,7 @@ context: |
 
   Stack: Rust/Tokio, Reqwest/Rustls, SQLx/PostgreSQL, GraphQL where required, NATS JetStream, typed encrypted credentials, WireMock and provider fixtures, tracing, testcontainers.
 
-  This repository holds no code yet. Its documents describe intent; a change here plans behaviour, and the first code arrives with its own ci.yml, its lint configuration carrying the size limits, and its tests.
+  The service foundation exists: a two-package Rust workspace, strict finite configuration, structured telemetry, operator routes, one editable github_catalog schema, disposable-database tests, and CI. Provider accounts, synchronization, mutations, public APIs, and event handling remain planned.
 
   The gate command list is the fenced block in DEVELOPMENT.md. That list and .github/workflows/ci.yml are one list, and a step in ci.yml fails when they differ, so change both or neither.
 

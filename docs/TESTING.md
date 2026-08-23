@@ -9,7 +9,7 @@ Required tests:
 - `metadata`/`track`/`star` workflows and partial-success matrices.
 - Idempotent provider mutations, retries, rate-limit/conditional request behavior.
 - Desired Vault policy and Knowledge request contracts.
-- SQL migrations, outbox/inbox redelivery, authorization, and secret-redaction.
+- Current-schema application, outbox/inbox redelivery, authorization, and secret-redaction.
 - Legacy import/shadow comparison with synthetic data.
 
 Default tests use WireMock/fixtures and no personal GitHub token. An opt-in sandbox suite may use a dedicated test account.

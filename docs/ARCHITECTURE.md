@@ -1,6 +1,8 @@
 # Ratatoskr GitHub Catalog Architecture
 
-> Status: target architecture. This repository is in architecture bootstrap; the document defines the intended GitHub bounded context, synchronization semantics, and integration boundaries.
+> Status: target architecture. The Rust service foundation, operator routes, current
+> `github_catalog` schema, and CI gate are implemented. Provider accounts, synchronization,
+> mutations, eventing, and the remaining sections are planned.
 
 ## 1. Purpose
 
@@ -68,7 +70,7 @@ ratatoskr-github/
 │   └── test-support/
 ├── services/
 │   └── github/
-├── migrations/
+├── schema.sql
 ├── fixtures/
 ├── tests/
 └── docs/
@@ -563,7 +565,7 @@ High-cardinality repository IDs remain in traces or logs with controlled samplin
 
 ### Integration
 
-- SQLx migrations and transactions;
+- current-schema application and transactions;
 - snapshot staging and authoritative reconciliation;
 - outbox/inbox replay;
 - encrypted credential lifecycle;

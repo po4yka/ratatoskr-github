@@ -22,7 +22,11 @@ It does **not** perform Git mirroring or prove that a backup can be restored. Ph
 
 ## Current phase
 
-The repository is in architecture bootstrap. Do not assume Rust crates, OAuth/PAT flows, GraphQL queries, migrations, sync workers, or CI commands exist unless they are present in the checkout.
+Implementation-plan item 1 is complete. The Rust workspace, strict configuration, structured
+telemetry, operator health routes, one editable `schema.sql`, disposable-database tests, and CI gate
+exist. OAuth/PAT flows, provider queries, sync workers, mutations, public APIs, and event handlers
+remain absent. Do not assume anything beyond the service foundation exists unless it is present in
+the checkout.
 
 When creating initial implementation:
 
@@ -354,7 +358,7 @@ GitHub Catalog may request analysis of a stable README/repository revision, but 
 - Do not mix repository-analysis JSON into generic article summary schemas.
 - A metadata sync must succeed independently of analysis availability.
 
-## Persistence and migrations
+## Persistence and schema evolution
 
 GitHub Catalog writes only its owned schema.
 
@@ -382,7 +386,7 @@ Rules:
 - provider raw payloads, when retained, are stored/referenced separately from normalized projections;
 - uniqueness constraints enforce account/repository/list identities;
 - sync run completion and snapshot authority are transactional;
-- migrations preserve observation history;
+- schema changes edit the current definition in place while the development status above holds;
 - destructive cleanup never removes evidence required to explain a star/removal decision.
 
 ## Commands and events
@@ -448,7 +452,7 @@ When implementation exists, include applicable tests for:
 - desired backup policy events;
 - pinned policy precedence;
 - outbox/inbox replay;
-- migrations preserving observation history;
+- current-schema checks preserving observation invariants;
 - provider adapters using synthetic/recorded redacted fixtures.
 
 Use property/state-machine tests for synchronization invariants. Never depend on a live personal GitHub account in normal tests.
@@ -489,5 +493,5 @@ A task is complete only when:
 - external writes require scope, explicit intent, audit, and partial-success reporting;
 - backup handling remains desired-state only, with no Git execution;
 - analysis remains delegated to Knowledge;
-- contracts, migrations, security, and telemetry are updated;
+- contracts, schema, security, and telemetry are updated;
 - repository-local tests and workspace integrations pass.

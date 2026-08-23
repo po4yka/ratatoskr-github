@@ -6,7 +6,7 @@
 - `INTERFACES.md` — API/events, provider, Knowledge, and Vault boundaries.
 - `DATA_MODEL.md` — `github_catalog` schema.
 - `THREAT_MODEL.md` — credential, private repository, mutation, and sync risks.
-- `TESTING.md` — sync, mutation, rate-limit, and migration tests.
+- `TESTING.md` — sync, mutation, rate-limit, and current-schema tests.
 - `IMPLEMENTATION_PLAN.md` — vertical implementation plan.
 - `adr/README.md` — decision process.
 
