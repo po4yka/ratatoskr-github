@@ -29,6 +29,8 @@ async fn owned_schema_applies_twice_without_cross_schema_objects()
             "outbox_events",
             "repositories",
             "repository_aliases",
+            "repository_metadata",
+            "repository_metadata_revisions",
             "repository_watches",
             "star_list_memberships",
             "star_lists",
@@ -93,6 +95,45 @@ async fn placeholder_tables_carry_the_decided_identity_rules()
     assert!(
         unstarred_without_evidence.is_err(),
         "an unstarred state must record observed_unstarred_at"
+    );
+
+    // One live holder per alias value: a second repository claiming an active
+    // owner/name is rejected, while superseded history stays out of the way.
+    let holder = uuid::Uuid::now_v7();
+    let challenger = uuid::Uuid::now_v7();
+    for (repository_id, provider_id) in [(holder, 990_001_i64), (challenger, 990_002_i64)] {
+        sqlx::query(
+            "insert into github_catalog.repositories
+                 (repository_id, provider_repository_id)
+             values ($1, $2)",
+        )
+        .bind(repository_id)
+        .bind(provider_id)
+        .execute(database.database.pool())
+        .await?;
+    }
+    let first_alias = sqlx::query(
+        "insert into github_catalog.repository_aliases
+             (alias_id, repository_id, alias_kind, alias_value)
+         values ($1, $2, 'owner_name', 'acme/widgets')",
+    )
+    .bind(uuid::Uuid::now_v7())
+    .bind(holder)
+    .execute(database.database.pool())
+    .await?;
+    assert_eq!(first_alias.rows_affected(), 1);
+    let conflicting_live_alias = sqlx::query(
+        "insert into github_catalog.repository_aliases
+             (alias_id, repository_id, alias_kind, alias_value)
+         values ($1, $2, 'owner_name', 'acme/widgets')",
+    )
+    .bind(uuid::Uuid::now_v7())
+    .bind(challenger)
+    .execute(database.database.pool())
+    .await;
+    assert!(
+        conflicting_live_alias.is_err(),
+        "a live owner/name alias must have exactly one holding repository"
     );
 
     database.cleanup().await?;

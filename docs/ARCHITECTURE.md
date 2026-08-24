@@ -1,8 +1,11 @@
 # Ratatoskr GitHub Catalog Architecture
 
 > Status: target architecture. The Rust service foundation, operator routes, current
-> `github_catalog` schema, and CI gate are implemented. Provider accounts, synchronization,
-> mutations, eventing, and the remaining sections are planned.
+> `github_catalog` schema, and CI gate are implemented. Repository identity, mutable aliases
+> with redirect history, metadata projection with conditional requests, per-token rate-limit
+> accounting, and bounded revision history are implemented (implementation plan items 1 and 3).
+> Provider accounts, star synchronization, mutations, eventing, and the remaining sections are
+> planned.
 
 ## 1. Purpose
 

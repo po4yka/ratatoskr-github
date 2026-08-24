@@ -10,6 +10,11 @@
 
 mod config;
 mod database;
+mod identity;
+mod metadata;
+mod observe;
+pub mod provider;
+pub mod rate_limit;
 mod telemetry;
 
 #[cfg(feature = "test-support")]
@@ -17,4 +22,10 @@ pub mod test_support;
 
 pub use config::{AdminConfig, Config, ConfigError, Limits, StorageConfig};
 pub use database::{Database, PersistenceError};
+pub use identity::{
+    AliasKind, IdentityError, RepositoryIdentity, apply_alias_observation, record_alias,
+    resolve_alias, upsert_repository,
+};
+pub use metadata::{AppliedOutcome, REVISION_HISTORY_LIMIT, apply_fresh_body, apply_not_modified};
+pub use observe::{ObserveError, ObserveOutcome, observe_repository};
 pub use telemetry::{TelemetryError, init_telemetry};

@@ -2,7 +2,7 @@
 
 1. Scaffold service, typed config, telemetry, errors, health, and schema. *(implemented)*
 2. Implement encrypted account credentials, PAT then OAuth PKCE, scopes, revoke.
-3. Implement stable repository identity, aliases, metadata, and conditional requests.
+3. Implement stable repository identity, aliases, metadata, and conditional requests. *(implemented)*
 4. Implement full star snapshot with atomic authority and checkpoints.
 5. Add safe incremental scans and scheduled reconciliation.
 6. Implement native star-list snapshots.

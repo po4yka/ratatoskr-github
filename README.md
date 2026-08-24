@@ -2,7 +2,7 @@
 
 `ratatoskr-github` is the GitHub Catalog bounded context for Ratatoskr. It records what repositories a user has starred or chosen to track, preserves GitHub metadata and list membership, coordinates repository analysis, and publishes the desired backup state consumed by Git Vault.
 
-> **Status:** implementation plan item 1 is complete: a Rust service runs locally with typed strict configuration, structured telemetry, operator health routes (`/live`, `/ready`, `/metrics`, `/version`), and the first-version `github_catalog` schema applied at startup. Accounts and credentials, synchronization, mutations, public APIs, and event handlers described below are planned and are not implemented yet.
+> **Status:** implementation plan items 1 and 3 are complete: a Rust service runs locally with typed strict configuration, structured telemetry, operator health routes (`/live`, `/ready`, `/metrics`, `/version`), the first-version `github_catalog` schema applied at startup, stable repository identity keyed by GitHub's numeric ID, mutable aliases with redirect history across renames and transfers, metadata projection refreshed through conditional requests (ETag/304), per-token rate-limit accounting shared across operations, and bounded metadata revision history. Account credentials, star synchronization, mutations, public APIs, and event handlers described below are planned and are not implemented yet.
 
 > [!IMPORTANT]
 > **Ratatoskr is in development.** No database holds data that has to survive a schema change.
@@ -64,13 +64,15 @@ The local model converges these observations on the stable GitHub ID rather than
 
 ## Current foundation schema
 
-The service owns a `github_catalog.*` PostgreSQL schema. Its current placeholder tables encode the
-identities and constraints already decided for later behavior:
+The service owns a `github_catalog.*` PostgreSQL schema. Its tables encode the
+identities and constraints already decided by the bounded context:
 
 ```text
 github_accounts
 repositories
-repository_aliases
+repository_aliases (live/superseded status, redirect history)
+repository_metadata
+repository_metadata_revisions
 star_observations
 current_star_state
 star_lists
@@ -83,8 +85,9 @@ outbox_events
 inbox_events
 ```
 
-Credential storage, rate-limit state, analysis references, and the behavior behind the placeholder
-tables remain planned.
+Repository identity, aliases, metadata projection with conditional requests,
+per-token rate-limit accounting, and bounded revision history are implemented.
+Credential storage, rate-limit persistence, analysis references, and the behavior behind the remaining placeholder tables remain planned.
 
 Typical repository metadata includes:
 

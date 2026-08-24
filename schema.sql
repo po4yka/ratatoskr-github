@@ -21,7 +21,9 @@ create table if not exists github_catalog.github_accounts (
 );
 
 -- GitHub's numeric repository ID is the stable upstream identity; owner/name and URLs are mutable
--- aliases recorded in repository_aliases and must never serve as the primary key.
+-- aliases recorded in repository_aliases and must never serve as the primary key. Exactly one
+-- repository may hold an alias value live at a time; superseded rows keep redirect history
+-- resolvable after renames, transfers, or name reuse by another repository.
 create table if not exists github_catalog.repositories (
     repository_id          uuid primary key,
     provider_repository_id bigint not null unique,
@@ -34,12 +36,51 @@ create table if not exists github_catalog.repository_aliases (
     repository_id uuid not null references github_catalog.repositories (repository_id),
     alias_kind    text not null,
     alias_value   text not null,
+    status        text not null default 'active',
+    redirect_to   uuid references github_catalog.repository_aliases (alias_id),
     created_at    timestamptz not null default now(),
     constraint repository_aliases_kind_check
         check (alias_kind in ('owner_name', 'html_url', 'clone_url')),
-    constraint repository_aliases_identity_key
-        unique (repository_id, alias_kind, alias_value)
+    constraint repository_aliases_status_check
+        check (status in ('active', 'superseded', 'released')),
+    constraint repository_aliases_redirect_targets_alias
+        check ((redirect_to is null) or (status = 'superseded'))
 );
+
+create unique index if not exists repository_aliases_live_identity_key
+    on github_catalog.repository_aliases (alias_kind, alias_value)
+    where status = 'active';
+
+create index if not exists repository_aliases_value_lookup
+    on github_catalog.repository_aliases (alias_kind, alias_value);
+
+-- One current metadata projection per repository plus conditional-request state; raw observed
+-- bodies live in repository_metadata_revisions and are pruned to a bounded recent window.
+create table if not exists github_catalog.repository_metadata (
+    repository_id    uuid primary key references github_catalog.repositories (repository_id),
+    description      text,
+    language         text,
+    stargazers_count bigint not null,
+    topics           jsonb not null default '[]'::jsonb,
+    default_branch   text,
+    pushed_at        timestamptz,
+    provider_etag    text,
+    content_hash     text not null,
+    fetched_at       timestamptz not null,
+    constraint repository_metadata_topics_is_array check (jsonb_typeof(topics) = 'array')
+);
+
+create table if not exists github_catalog.repository_metadata_revisions (
+    revision_id   uuid primary key,
+    repository_id uuid not null references github_catalog.repositories (repository_id),
+    payload       jsonb not null,
+    content_hash  text not null,
+    observed_at   timestamptz not null,
+    constraint repository_metadata_revisions_payload_is_object check (jsonb_typeof(payload) = 'object')
+);
+
+create index if not exists repository_metadata_revisions_repo_observed_idx
+    on github_catalog.repository_metadata_revisions (repository_id, observed_at);
 
 create table if not exists github_catalog.sync_runs (
     sync_run_id uuid primary key,

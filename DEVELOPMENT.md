@@ -3,7 +3,7 @@
 > Status: Active  
 > Last reviewed: 2026-08-23
 
-The service foundation is implemented: a Rust workspace with typed configuration, structured telemetry, operator health routes, and the first-version `github_catalog` schema. Accounts and credentials, synchronization, mutations, and event handling are not implemented.
+The service foundation is implemented: a Rust workspace with typed configuration, structured telemetry, operator health routes, and the first-version `github_catalog` schema. Repository identity, mutable aliases with redirect history, metadata projection with conditional requests, per-token rate-limit accounting, and bounded revision history are implemented on that foundation. Account credentials, star synchronization, mutations, and event handling are not implemented.
 
 ## Toolchain and gate
 
