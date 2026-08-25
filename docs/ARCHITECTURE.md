@@ -3,9 +3,11 @@
 > Status: target architecture. The Rust service foundation, operator routes, current
 > `github_catalog` schema, and CI gate are implemented. Repository identity, mutable aliases
 > with redirect history, metadata projection with conditional requests, per-token rate-limit
-> accounting, and bounded revision history are implemented (implementation plan items 1 and 3).
-> Provider accounts, star synchronization, mutations, eventing, and the remaining sections are
-> planned.
+> accounting, and bounded revision history are implemented (implementation plan items 1 and 3),
+> as are full star snapshots: complete enumeration under rate budgets, resumable checkpoints,
+> atomic authority swap in one transaction, and evidenced unstars (item 4). Provider accounts
+> (item 2), incremental scans and scheduling (item 5), native star lists (item 6), mutations,
+> eventing, and the remaining sections are planned.
 
 ## 1. Purpose
 

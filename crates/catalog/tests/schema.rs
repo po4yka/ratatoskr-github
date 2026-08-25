@@ -32,6 +32,7 @@ async fn owned_schema_applies_twice_without_cross_schema_objects()
             "repository_metadata",
             "repository_metadata_revisions",
             "repository_watches",
+            "snapshot_items",
             "star_list_memberships",
             "star_lists",
             "star_observations",
@@ -95,6 +96,21 @@ async fn placeholder_tables_carry_the_decided_identity_rules()
     assert!(
         unstarred_without_evidence.is_err(),
         "an unstarred state must record observed_unstarred_at"
+    );
+
+    // A starred projection carries the provider starred-at that established it.
+    let starred_without_starred_at = sqlx::query(
+        "insert into github_catalog.current_star_state
+             (account_id, repository_id, starred, last_observed_at)
+         values ($1, $2, true, now())",
+    )
+    .bind(uuid::Uuid::now_v7())
+    .bind(uuid::Uuid::now_v7())
+    .execute(database.database.pool())
+    .await;
+    assert!(
+        starred_without_starred_at.is_err(),
+        "a starred state must carry its establishing starred-at timestamp"
     );
 
     // One live holder per alias value: a second repository claiming an active

@@ -15,6 +15,7 @@ mod metadata;
 mod observe;
 pub mod provider;
 pub mod rate_limit;
+mod snapshot;
 mod telemetry;
 
 #[cfg(feature = "test-support")]
@@ -28,4 +29,5 @@ pub use identity::{
 };
 pub use metadata::{AppliedOutcome, REVISION_HISTORY_LIMIT, apply_fresh_body, apply_not_modified};
 pub use observe::{ObserveError, ObserveOutcome, observe_repository};
+pub use snapshot::{FullSnapshotOutcome, SnapshotError, run_full_snapshot};
 pub use telemetry::{TelemetryError, init_telemetry};

@@ -2,7 +2,7 @@
 
 `ratatoskr-github` is the GitHub Catalog bounded context for Ratatoskr. It records what repositories a user has starred or chosen to track, preserves GitHub metadata and list membership, coordinates repository analysis, and publishes the desired backup state consumed by Git Vault.
 
-> **Status:** implementation plan items 1 and 3 are complete: a Rust service runs locally with typed strict configuration, structured telemetry, operator health routes (`/live`, `/ready`, `/metrics`, `/version`), the first-version `github_catalog` schema applied at startup, stable repository identity keyed by GitHub's numeric ID, mutable aliases with redirect history across renames and transfers, metadata projection refreshed through conditional requests (ETag/304), per-token rate-limit accounting shared across operations, and bounded metadata revision history. Account credentials, star synchronization, mutations, public APIs, and event handlers described below are planned and are not implemented yet.
+> **Status:** implementation plan items 1, 3, and 4 are complete: a Rust service runs locally with typed strict configuration, structured telemetry, operator health routes (`/live`, `/ready`, `/metrics`, `/version`), the first-version `github_catalog` schema applied at startup, stable repository identity keyed by GitHub's numeric ID, mutable aliases with redirect history across renames and transfers, metadata projection refreshed through conditional requests (ETag/304), per-token rate-limit accounting shared across operations, bounded metadata revision history, and full star snapshots that enumerate the whole starred listing under rate budgets, resume from durable checkpoints, swap star authority atomically in one transaction, and record unstars as evidenced observations. Account credentials, incremental scans, native star lists, mutations, public APIs, and event handlers described below are planned and are not implemented yet.
 
 > [!IMPORTANT]
 > **Ratatoskr is in development.** No database holds data that has to survive a schema change.
@@ -317,8 +317,10 @@ would emit them.
 
 ## Implementation plan
 
-The authoritative sequence is [`docs/IMPLEMENTATION_PLAN.md`](docs/IMPLEMENTATION_PLAN.md). Item 1,
-the service foundation, is implemented. Items 2 through 10 remain planned.
+The authoritative sequence is [`docs/IMPLEMENTATION_PLAN.md`](docs/IMPLEMENTATION_PLAN.md). Items 1
+and 3 (service foundation; repository identity and metadata) and item 4 (full star snapshots with
+atomic authority, checkpoints, and evidenced unstars) are implemented. Items 2 and 5 through 10
+remain planned.
 
 ## Workspace integration
 

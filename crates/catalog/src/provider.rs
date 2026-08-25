@@ -7,6 +7,9 @@ use serde::Deserialize;
 
 use crate::rate_limit::RateLimitHeaders;
 
+/// Fixed page size for starred-listing enumeration.
+const STARRED_PAGE_SIZE: u32 = 100;
+
 /// Owner and name of a repository as GitHub spells it.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct OwnerName {
@@ -63,6 +66,32 @@ pub enum FetchOutcome {
         /// The target `owner/name` from the move location.
         target: OwnerName,
     },
+}
+
+/// One entry of the starred-repository listing: when the star was made and
+/// the repository payload itself.
+#[derive(Debug, Clone, PartialEq)]
+pub struct StarredItem {
+    /// The provider `starred_at` timestamp as supplied by the listing.
+    pub starred_at: Option<String>,
+    /// The normalized repository payload.
+    pub repo: ProviderRepositoryBody,
+}
+
+/// One page of the starred-repository listing.
+#[derive(Debug, Clone, PartialEq, Default)]
+pub struct StarredPage {
+    /// The entries of this page; empty pages terminate enumeration.
+    pub items: Vec<StarredItem>,
+}
+
+/// One starred-listing page reply with its rate-limit headers.
+#[derive(Debug, Clone, PartialEq)]
+pub struct ListingReply {
+    /// The decoded page.
+    pub page: StarredPage,
+    /// Rate-limit headers from the same response.
+    pub rate_limit: RateLimitHeaders,
 }
 
 /// Provider access failures, classified for callers.
@@ -142,6 +171,19 @@ pub trait GithubApi {
         name: &str,
         etag: Option<&str>,
     ) -> impl std::future::Future<Output = Result<GatewayReply, ProviderError>> + Send;
+
+    /// Fetches one page of the authenticated account's starred-repository
+    /// listing. Pages are numbered from one; an empty page terminates
+    /// enumeration.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ProviderError`] classifications for caller handling.
+    fn list_starred(
+        &self,
+        token: Option<&str>,
+        page: u32,
+    ) -> impl std::future::Future<Output = Result<ListingReply, ProviderError>> + Send;
 }
 
 /// Reads rate-limit headers off a response, tolerating absent values.
@@ -226,6 +268,14 @@ fn parse_moved_location(location: &str) -> Option<OwnerName> {
     })
 }
 
+/// The wire format of one starred-listing entry: the star timestamp beside
+/// the repository payload.
+#[derive(Debug, Deserialize)]
+struct StarredItemWire {
+    starred_at: Option<String>,
+    repo: ProviderRepositoryBody,
+}
+
 impl GithubApi for ReqwestGithubApi {
     async fn fetch_repository(
         &self,
@@ -292,6 +342,48 @@ impl GithubApi for ReqwestGithubApi {
         };
         Ok(GatewayReply {
             outcome,
+            rate_limit,
+        })
+    }
+
+    async fn list_starred(
+        &self,
+        token: Option<&str>,
+        page: u32,
+    ) -> Result<ListingReply, ProviderError> {
+        let url = format!("{}/user/starred", self.base_url);
+        let mut request = self
+            .http
+            .get(url)
+            .query(&[("page", page), ("per_page", STARRED_PAGE_SIZE)])
+            .header("Accept", "application/vnd.github.star+json");
+        if let Some(token) = token {
+            request = request.bearer_auth(token);
+        }
+        let response = request.send().await.map_err(ProviderError::Transport)?;
+        let rate_limit = rate_headers_from(response.headers());
+        let items = match response.status() {
+            reqwest::StatusCode::OK => {
+                let wire: Vec<StarredItemWire> =
+                    response.json().await.map_err(ProviderError::Transport)?;
+                wire.into_iter()
+                    .map(|entry| StarredItem {
+                        starred_at: entry.starred_at,
+                        repo: entry.repo,
+                    })
+                    .collect()
+            }
+            reqwest::StatusCode::UNAUTHORIZED | reqwest::StatusCode::FORBIDDEN => {
+                return Err(ProviderError::Unauthorized);
+            }
+            status => {
+                return Err(ProviderError::UnexpectedStatus {
+                    status: status.as_u16(),
+                });
+            }
+        };
+        Ok(ListingReply {
+            page: StarredPage { items },
             rate_limit,
         })
     }

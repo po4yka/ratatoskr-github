@@ -83,22 +83,41 @@ create index if not exists repository_metadata_revisions_repo_observed_idx
     on github_catalog.repository_metadata_revisions (repository_id, observed_at);
 
 create table if not exists github_catalog.sync_runs (
-    sync_run_id uuid primary key,
-    mode        text not null,
-    status      text not null,
+    sync_run_id    uuid primary key,
+    account_id     uuid not null references github_catalog.github_accounts (account_id),
+    mode           text not null,
+    status         text not null,
+    failure_reason text,
+    pages_processed integer not null default 0,
+    items_observed  integer not null default 0,
+    additions       integer not null default 0,
+    unstars         integer not null default 0,
     started_at  timestamptz not null default now(),
     finished_at timestamptz,
     constraint sync_runs_mode_check check (mode in ('incremental', 'full')),
     constraint sync_runs_status_check
         check (status in ('running', 'completed', 'failed', 'cancelled')),
     constraint sync_runs_finish_matches_terminal_status
-        check ((status in ('completed', 'failed', 'cancelled')) = (finished_at is not null))
+        check ((status in ('completed', 'failed', 'cancelled')) = (finished_at is not null)),
+    constraint sync_runs_failure_reason_needs_failed_status
+        check ((status = 'failed') = (failure_reason is not null))
 );
 
 create table if not exists github_catalog.sync_checkpoints (
     checkpoint_id uuid primary key,
     sync_run_id   uuid not null references github_catalog.sync_runs (sync_run_id),
+    next_page     bigint not null,
     recorded_at   timestamptz not null default now()
+);
+
+-- Durable per-run staging of what a full snapshot saw; consumed by the
+-- authority swap and cleared when the run reaches a terminal state.
+create table if not exists github_catalog.snapshot_items (
+    sync_run_id            uuid not null references github_catalog.sync_runs (sync_run_id),
+    position               bigint not null,
+    provider_repository_id bigint not null,
+    provider_starred_at    timestamptz,
+    primary key (sync_run_id, position)
 );
 
 -- Observations are append-only evidence; the projection lives in current_star_state.
@@ -114,17 +133,21 @@ create table if not exists github_catalog.star_observations (
 );
 
 -- The exact upstream unstar time is unknown, so removal evidence uses observed_unstarred_at and
--- an unstarred state must carry the snapshot that established it.
+-- an unstarred state must carry the snapshot that established it. A starred state must carry the
+-- provider starred-at that established it; confirmations never overwrite an established value.
 create table if not exists github_catalog.current_star_state (
     account_id            uuid not null references github_catalog.github_accounts (account_id),
     repository_id         uuid not null references github_catalog.repositories (repository_id),
     starred               boolean not null,
+    starred_at            timestamptz,
     last_observed_at      timestamptz not null,
     observed_unstarred_at timestamptz,
     evidence_run_id       uuid references github_catalog.sync_runs (sync_run_id),
     primary key (account_id, repository_id),
     constraint current_star_state_removal_evidence_check
-        check ((starred = true) or (observed_unstarred_at is not null))
+        check ((starred = true) or (observed_unstarred_at is not null)),
+    constraint current_star_state_starred_at_presence_check
+        check ((starred = false) or (starred_at is not null))
 );
 
 create table if not exists github_catalog.star_lists (

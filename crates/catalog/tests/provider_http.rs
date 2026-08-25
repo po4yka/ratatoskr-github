@@ -1,9 +1,10 @@
 //! HTTP-level provider gateway behavior against a local mock server.
 
+use ratatoskr_github_catalog::provider::ReqwestGithubApi;
 use ratatoskr_github_catalog::provider::{
     FetchOutcome, FreshRepository, GithubApi, OwnerName, ProviderRepositoryBody,
 };
-use wiremock::matchers::{header, method, path};
+use wiremock::matchers::{header, method, path, query_param};
 use wiremock::{Mock, MockServer, ResponseTemplate};
 
 const REPO_PATH: &str = "/repos/acme/widgets";
@@ -142,5 +143,112 @@ async fn mismatched_full_name_reports_rename_evidence_with_payload()
         }),
         "the payload must still be delivered, with the differing full_name as evidence"
     );
+    Ok(())
+}
+
+fn starred_item(id: i64, name: &str, starred_at: &str) -> String {
+    format!(
+        r#"{{"starred_at": "{starred_at}", "repo": {{
+            "id": {id},
+            "full_name": "{name}",
+            "description": null,
+            "language": "Rust",
+            "stargazers_count": 1,
+            "topics": [],
+            "default_branch": "main",
+            "pushed_at": null
+        }}}}"#
+    )
+}
+
+#[tokio::test]
+async fn starred_listing_serves_pages_with_rate_headers_and_starred_at()
+-> Result<(), Box<dyn std::error::Error>> {
+    let server = MockServer::start().await;
+
+    let page_bodies = [
+        (
+            1_u32,
+            format!(
+                "[{}, {}]",
+                starred_item(300_000_001, "acme/alpha", "2026-01-01T00:00:00Z"),
+                starred_item(300_000_002, "acme/beta", "2026-02-02T00:00:00Z")
+            ),
+        ),
+        (
+            2,
+            format!(
+                "[{}]",
+                starred_item(300_000_003, "acme/gamma", "2026-03-03T00:00:00Z")
+            ),
+        ),
+        (3, "[]".to_owned()),
+    ];
+    for (page, body) in &page_bodies {
+        Mock::given(method("GET"))
+            .and(path("/user/starred"))
+            .and(query_param("page", page.to_string()))
+            .and(header("accept", "application/vnd.github.star+json"))
+            .respond_with(
+                ResponseTemplate::new(200)
+                    .set_body_string(body.clone())
+                    .insert_header("x-ratelimit-limit", "5000")
+                    .insert_header("x-ratelimit-remaining", "4999")
+                    .insert_header("x-ratelimit-reset", "1787000000"),
+            )
+            .expect(1)
+            .mount(&server)
+            .await;
+    }
+
+    let gateway = ReqwestGithubApi::for_base_url(&server.uri())?;
+
+    let first = gateway.list_starred(None, 1).await?;
+    assert_eq!(first.page.items.len(), 2, "page one must carry both items");
+    assert_eq!(first.page.items[0].repo.provider_repository_id, 300_000_001);
+    assert_eq!(
+        first.page.items[0]
+            .repo
+            .owner_name()
+            .map(|owner_name| owner_name.to_string()),
+        Some("acme/alpha".to_owned())
+    );
+    assert_eq!(
+        first.page.items[0].starred_at.as_deref(),
+        Some("2026-01-01T00:00:00Z"),
+        "the listing must surface the provider starred-at timestamp"
+    );
+    assert_eq!(
+        first.rate_limit.remaining,
+        Some(4999),
+        "listing replies must carry rate-limit headers for the shared ledger"
+    );
+
+    let second = gateway.list_starred(None, 2).await?;
+    assert_eq!(second.page.items.len(), 1, "page two must carry its item");
+
+    let third = gateway.list_starred(None, 3).await?;
+    assert!(
+        third.page.items.is_empty(),
+        "an empty page must be representable so enumeration can terminate"
+    );
+
+    let received = server.received_requests().await.unwrap_or_default();
+    let requested_pages: Vec<String> = received
+        .iter()
+        .filter_map(|request| {
+            request
+                .url
+                .query_pairs()
+                .find_map(|(key, value)| (key == "page").then(|| value.into_owned()))
+        })
+        .collect();
+    assert_eq!(
+        requested_pages,
+        ["1", "2", "3"],
+        "pages must be requested in ascending order"
+    );
+
+    server.verify().await;
     Ok(())
 }

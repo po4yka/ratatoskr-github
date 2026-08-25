@@ -12,7 +12,7 @@
 
 ## Implemented tables
 
-`repositories` and `repository_aliases` (implementation plan item 3): the provider numeric ID is unique; exactly one repository may hold an alias value live (`status = 'active'`) at a time, enforced by a partial unique index; superseded rows keep redirect history resolvable after renames, transfers, or name reuse. `repository_metadata` and `repository_metadata_revisions`: the projection carries description, language, stargazer count, topics, default branch, `pushed_at`, and the stored ETag; every distinct observed body appends one revision and history is pruned to the most recent window per repository.
+`repositories` and `repository_aliases` (implementation plan item 3): the provider numeric ID is unique; exactly one repository may hold an alias value live (`status = 'active'`) at a time, enforced by a partial unique index; superseded rows keep redirect history resolvable after renames, transfers, or name reuse. `repository_metadata` and `repository_metadata_revisions`: the projection carries description, language, stargazer count, topics, default branch, `pushed_at`, and the stored ETag; every distinct observed body appends one revision and history is pruned to the most recent window per repository. Full star snapshots (item 4) use `sync_runs` (account reference, mode `full`, terminal status, failure reason, item statistics), `sync_checkpoints` (the next page to fetch after each durably processed page), and the per-run staging table `snapshot_items`; the authority swap promotes a completed snapshot into `current_star_state` - whose `starred_at` preserves the earliest established provider value - and appends evidenced unstars to `star_observations` in one transaction.
 
 ## Constraints
 
