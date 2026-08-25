@@ -207,23 +207,35 @@ The service never invents an exact `unstarred_at` timestamp when GitHub does not
 
 ### 7.2. Incremental synchronization
 
-Incremental sync scans stars ordered by provider `starred_at` descending and uses a high-water mark.
+Incremental sync scans stars ordered by provider `starred_at` descending (`sort=created&direction=desc`) and uses a persisted per-account high-water mark.
 
 ```mermaid
 flowchart TD
     Start[Start incremental sync]
-    Page[Fetch next page]
-    Upsert[Upsert repository and positive star observation]
+    Baseline{Watermark exists?}
+    Full[Run full snapshot instead]
+    Page[Fetch next page newest-first]
+    Order{Ordering provable?}
+    Gap[Fail run as gap; force full rescan]
+    Ingest[Upsert strictly newer items]
     Mark{Reached high-water mark?}
     More{More pages?}
-    Done[Commit checkpoint]
+    Done[Advance watermark; complete]
 
-    Start --> Page --> Upsert --> Mark
+    Start --> Baseline
+    Baseline -- no --> Full
+    Baseline -- yes --> Page --> Order
+    Order -- no --> Gap
+    Order -- yes --> Ingest --> Mark
     Mark -- yes --> Done
     Mark -- no --> More
     More -- yes --> Page
     More -- no --> Done
 ```
+
+Implemented semantics: items strictly newer than the mark are ingested page by page, each page durably recorded with a checkpoint that carries the smallest seen `starred_at` so a resumed run can keep enforcing the ordering proof. Coverage is proven by the first item at or below the mark or by provider exhaustion; only then does the watermark advance - to the oldest ingested timestamp, guarded so it never retreats. A missing or unparsable timestamp and any sequence increase are gaps: the run fails with the reason recorded, nothing from the offending page is kept, and the caller escalates to a full rescan. A baseline-less account defers to a full snapshot.
+
+Triggering is command-driven: the platform scheduler publishes `cmd.github.sync.requested.v1`, the catalog validates the envelope under the platform command grammar, claims it durably in `inbox_events` keyed by the command identity (at-least-once redelivery performs no second effect), and dispatches the payload mode - incremental by default, full for periodic reconciliation. Schedule registration is an operator action through platform's documented mechanism; this service implements no registration API.
 
 Incremental scans discover additions and updates. They do not prove removals.
 
@@ -238,11 +250,13 @@ start snapshot
 -> upsert repositories and memberships
 -> verify pagination completed without fatal errors
 -> compare complete observed set
+-> record named drift repairs (unstar_after_drift / restore_after_miss)
 -> mark missing items as observed unstarred
+-> re-anchor the incremental watermark to the newest observation
 -> commit authoritative checkpoint
 ```
 
-If any page fails permanently, the snapshot is incomplete and no missing item is marked removed.
+If any page fails permanently, the snapshot is incomplete and no missing item is marked removed. Drift repairs are recorded inside the same transaction as the authority swap, one row per drifted repository keyed `(sync_run_id, repository_id)`, so repeating reconciliation on converged state writes nothing and changes nothing.
 
 ### 7.4. Authoritative invariant
 

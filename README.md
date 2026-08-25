@@ -2,7 +2,7 @@
 
 `ratatoskr-github` is the GitHub Catalog bounded context for Ratatoskr. It records what repositories a user has starred or chosen to track, preserves GitHub metadata and list membership, coordinates repository analysis, and publishes the desired backup state consumed by Git Vault.
 
-> **Status:** implementation plan items 1, 3, and 4 are complete: a Rust service runs locally with typed strict configuration, structured telemetry, operator health routes (`/live`, `/ready`, `/metrics`, `/version`), the first-version `github_catalog` schema applied at startup, stable repository identity keyed by GitHub's numeric ID, mutable aliases with redirect history across renames and transfers, metadata projection refreshed through conditional requests (ETag/304), per-token rate-limit accounting shared across operations, bounded metadata revision history, and full star snapshots that enumerate the whole starred listing under rate budgets, resume from durable checkpoints, swap star authority atomically in one transaction, and record unstars as evidenced observations. Account credentials, incremental scans, native star lists, mutations, public APIs, and event handlers described below are planned and are not implemented yet.
+> **Status:** implementation plan items 1, 3, 4, and 5 are complete: a Rust service runs locally with typed strict configuration, structured telemetry, operator health routes (`/live`, `/ready`, `/metrics`, `/version`), the first-version `github_catalog` schema applied at startup, stable repository identity keyed by GitHub's numeric ID, mutable aliases with redirect history across renames and transfers, metadata projection refreshed through conditional requests (ETag/304), per-token rate-limit accounting shared across operations, bounded metadata revision history, full star snapshots that enumerate the whole starred listing under rate budgets, resume from durable checkpoints, swap star authority atomically in one transaction, record unstars as evidenced observations, watermark-governed incremental scans that never infer removals and force a full rescan on any ordering gap, recorded idempotent drift repairs inside the reconciliation swap, and consumption of the platform scheduler's `github.sync.requested.v1` commands through a durable idempotent inbox. Account credentials, native star lists, mutations, public APIs, and event handlers described below are planned and are not implemented yet.
 
 > [!IMPORTANT]
 > **Ratatoskr is in development.** No database holds data that has to survive a schema change.
@@ -36,7 +36,7 @@ It does **not** execute `git clone`, manage local disk paths, create bundles, re
 - encrypted credential lifecycle and scope auditing;
 - repository identity and mutable aliases;
 - starred-repository synchronization;
-- full-snapshot reconciliation and observed unstars;
+- incremental scans bounded by a watermark, full-snapshot reconciliation, and observed unstars;
 - native GitHub star-list synchronization;
 - repository metadata, languages, topics, README metadata, and content hashes;
 - manual repository tracking;
@@ -114,24 +114,55 @@ GitHub star synchronization uses two complementary modes.
 
 ### Incremental scan
 
-- fetch starred repositories ordered by `starred_at` descending;
-- stop after reaching a persisted high-water mark;
-- upsert new and changed repositories;
-- refresh metadata without unnecessary analysis;
-- never infer an unstar from an incomplete listing.
+- fetch starred repositories ordered by `starred_at` descending (`sort=created&direction=desc`);
+- ingest exactly the items strictly newer than the account's persisted high-water mark, upserting identity and star state without touching anything else;
+- stop once an item at or below the watermark proves the rest of the listing was already covered, or when the provider reports exhaustion;
+- advance the watermark to the oldest ingested timestamp only after durable success; a completed full snapshot re-anchors it to its newest observation;
+- never infer an unstar from an incomplete listing;
+- treat a missing or unparsable `starred_at`, or any increase in the `starred_at` sequence across pages - including across a resumed run, whose ordering boundary travels in the checkpoint - as a gap: the run fails with the reason recorded and a full rescan is required;
+- defer to a full snapshot when no baseline exists yet.
 
 ### Full snapshot
 
 - periodically enumerate the complete starred-repository set;
 - record the successful snapshot boundary;
 - only after the complete traversal, mark previously starred but absent repositories as no longer starred;
-- preserve the time as `observed_unstarred_at`, because the exact upstream removal time may be unknown.
+- preserve the time as `observed_unstarred_at`, because the exact upstream removal time may be unknown;
+- record each drift repair explicitly - `unstar_after_drift` for locally starred but absent, `restore_after_miss` for locally unstarred but listed again - inside the same atomic swap transaction, keyed so repeating reconciliation on converged state records nothing and changes nothing.
 
 The central invariant is:
 
 > Absence from a partial scan proves nothing. Only a successful full snapshot can establish removal.
 
 This protects the catalog from false unstars caused by pagination errors, rate limits, transient authorization failures, or interrupted jobs.
+
+### Scheduled synchronization
+
+Synchronization runs on a schedule owned by the platform scheduler. The scheduler publishes this service's sync commands to `cmd.github.sync.requested.v1` using the platform command grammar (see platform ADR-0005 and the scheduler architecture notes); the catalog validates the envelope strictly, claims the command durably in `inbox_events` keyed by the command identity so at-least-once redelivery performs no second effect, dispatches the payload's requested mode (`incremental` by default, `full` for periodic reconciliation), and escalates an ordering gap into an immediate full rescan.
+
+This service implements no registration API. Schedules are registered through the mechanism platform documents: an operator inserts disabled rows into platform's schedule table following platform's published statement form (see `ratatoskr-platform/deploy/README.md`, "Registering a schedule"), then enables them explicitly. This repository's two schedules:
+
+```sql
+-- Frequent incremental sync (every 5 minutes), created disabled.
+insert into operations.schedules
+    (owner_user_id, subject, payload, schedule_expression, enabled)
+values
+    (<user uuid>, 'github.sync.requested.v1', '{"account": "<github-login>"}',
+     '0 */5 * * * *', false);
+
+-- Periodic full reconciliation (daily at 04:30), created disabled.
+insert into operations.schedules
+    (owner_user_id, subject, payload, schedule_expression, enabled)
+values
+    (<user uuid>, 'github.sync.requested.v1', '{"account": "<github-login>", "mode": "full"}',
+     '0 30 4 * * *', false);
+
+-- Enable both after verification.
+update operations.schedules set enabled = true
+where subject = 'github.sync.requested.v1' and owner_user_id = <user uuid>;
+```
+
+Column names follow platform's documented schema; if platform's statement form changes, platform's documentation wins over this example.
 
 ## Native star lists
 
@@ -318,9 +349,10 @@ would emit them.
 ## Implementation plan
 
 The authoritative sequence is [`docs/IMPLEMENTATION_PLAN.md`](docs/IMPLEMENTATION_PLAN.md). Items 1
-and 3 (service foundation; repository identity and metadata) and item 4 (full star snapshots with
-atomic authority, checkpoints, and evidenced unstars) are implemented. Items 2 and 5 through 10
-remain planned.
+and 3 (service foundation; repository identity and metadata), item 4 (full star snapshots with
+atomic authority, checkpoints, and evidenced unstars), and item 5 (watermark-governed incremental
+scans with gap-forced rescans, recorded drift repairs, and platform-scheduler command consumption)
+are implemented. Items 2 and 6 through 10 remain planned.
 
 ## Workspace integration
 
@@ -331,4 +363,4 @@ remains independently buildable and testable.
 
 ## Project status
 
-The process foundation (configuration, telemetry, operator health, owned schema) is implemented and gated by CI. Account connections, synchronization, mutations, and database models for those behaviors do not exist yet; the sections above describe the intended GitHub Catalog architecture.
+The process foundation (configuration, telemetry, operator health, owned schema), repository identity with metadata, full snapshots, incremental scans with scheduled reconciliation via consumed sync commands are implemented and gated by CI. Account connections (credential storage), mutations, public APIs, star lists, watches, and event publication do not exist yet; those sections above describe the intended GitHub Catalog architecture.

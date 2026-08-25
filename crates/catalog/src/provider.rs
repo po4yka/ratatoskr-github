@@ -184,6 +184,20 @@ pub trait GithubApi {
         token: Option<&str>,
         page: u32,
     ) -> impl std::future::Future<Output = Result<ListingReply, ProviderError>> + Send;
+
+    /// Fetches one page of the authenticated account's starred-repository
+    /// listing ordered newest-first by star creation time, the ordering an
+    /// incremental scan needs to bound its window. Pages are numbered from
+    /// one; an empty page terminates enumeration.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ProviderError`] classifications for caller handling.
+    fn list_starred_newest_first(
+        &self,
+        token: Option<&str>,
+        page: u32,
+    ) -> impl std::future::Future<Output = Result<ListingReply, ProviderError>> + Send;
 }
 
 /// Reads rate-limit headers off a response, tolerating absent values.
@@ -351,12 +365,37 @@ impl GithubApi for ReqwestGithubApi {
         token: Option<&str>,
         page: u32,
     ) -> Result<ListingReply, ProviderError> {
+        self.list_starred_with(token, page, &[]).await
+    }
+
+    async fn list_starred_newest_first(
+        &self,
+        token: Option<&str>,
+        page: u32,
+    ) -> Result<ListingReply, ProviderError> {
+        self.list_starred_with(token, page, &[("sort", "created"), ("direction", "desc")])
+            .await
+    }
+}
+
+impl ReqwestGithubApi {
+    /// Fetches one starred-listing page with an explicit ordering; an empty
+    /// ordering leaves the provider default untouched.
+    async fn list_starred_with(
+        &self,
+        token: Option<&str>,
+        page: u32,
+        ordering: &[(&'static str, &'static str)],
+    ) -> Result<ListingReply, ProviderError> {
         let url = format!("{}/user/starred", self.base_url);
         let mut request = self
             .http
             .get(url)
-            .query(&[("page", page), ("per_page", STARRED_PAGE_SIZE)])
-            .header("Accept", "application/vnd.github.star+json");
+            .query(&[("page", page), ("per_page", STARRED_PAGE_SIZE)]);
+        if !ordering.is_empty() {
+            request = request.query(ordering);
+        }
+        request = request.header("Accept", "application/vnd.github.star+json");
         if let Some(token) = token {
             request = request.bearer_auth(token);
         }

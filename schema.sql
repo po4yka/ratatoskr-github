@@ -107,6 +107,10 @@ create table if not exists github_catalog.sync_checkpoints (
     checkpoint_id uuid primary key,
     sync_run_id   uuid not null references github_catalog.sync_runs (sync_run_id),
     next_page     bigint not null,
+    -- Smallest provider starred_at seen so far in an incremental run; restores the
+    -- monotonicity guard across a resumed run. Null for full snapshots, whose page
+    -- order carries no meaning.
+    boundary_starred_at timestamptz,
     recorded_at   timestamptz not null default now()
 );
 
@@ -148,6 +152,28 @@ create table if not exists github_catalog.current_star_state (
         check ((starred = true) or (observed_unstarred_at is not null)),
     constraint current_star_state_starred_at_presence_check
         check ((starred = false) or (starred_at is not null))
+);
+
+-- Incremental scans ingest only what is newer than the account's high-water mark; the mark moves
+-- only when a scan durably proves coverage of everything newer than it. A completed full snapshot
+-- re-anchors it to the newest observed starred-at.
+create table if not exists github_catalog.star_watermarks (
+    account_id      uuid primary key references github_catalog.github_accounts (account_id),
+    high_water_mark timestamptz not null,
+    updated_at      timestamptz not null default now()
+);
+
+-- Drift repairs recorded by a completed full snapshot inside its authority swap: a repository
+-- absent while locally starred, or present again while locally unstarred. One row per drifted
+-- repository per completing run; repetition on converged state writes nothing.
+create table if not exists github_catalog.reconciliation_repairs (
+    sync_run_id   uuid not null references github_catalog.sync_runs (sync_run_id),
+    repository_id uuid not null references github_catalog.repositories (repository_id),
+    action        text not null,
+    recorded_at   timestamptz not null default now(),
+    primary key (sync_run_id, repository_id),
+    constraint reconciliation_repairs_action_check
+        check (action in ('unstar_after_drift', 'restore_after_miss'))
 );
 
 create table if not exists github_catalog.star_lists (

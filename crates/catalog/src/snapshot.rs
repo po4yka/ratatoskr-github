@@ -246,7 +246,7 @@ fn item_count_as_i32(items: &[crate::provider::StarredItem]) -> i32 {
 /// Terminates a run as failed: the failure reason is recorded, the dead
 /// run's staging is cleared so it cannot leak into later runs, and star
 /// authority is deliberately untouched.
-async fn fail_run(
+pub(crate) async fn fail_run(
     database: &Database,
     run_id: Uuid,
     reason: &str,
@@ -296,8 +296,12 @@ async fn apply_authority_and_complete(
 
     let additions = count_additions(&mut transaction, run_id, account_id).await?;
     record_star_observations(&mut transaction, run_id, account_id).await?;
+    // Restore repairs must be captured before the promotion flips the very
+    // state they describe.
+    record_restore_repairs(&mut transaction, run_id, account_id).await?;
     promote_seen_repositories(&mut transaction, run_id, account_id).await?;
     let unstar_count = unstar_absent_repositories(&mut transaction, run_id, account_id).await?;
+    reanchor_watermark(&mut transaction, run_id, account_id).await?;
     clear_staging(&mut transaction, run_id).await?;
     let (pages_processed, items_observed) =
         complete_run_row(&mut transaction, run_id, additions, unstar_count).await?;
@@ -308,6 +312,66 @@ async fn apply_authority_and_complete(
         .map_err(crate::database::PersistenceError::Query)?;
 
     Ok((pages_processed, items_observed, additions, unstar_count))
+}
+
+/// Records a named drift repair for every repository the fresh listing
+/// presents again while local state still holds it unstarred - the mark of
+/// an addition an incremental pass missed. Captured before promotion flips
+/// that state; keyed per run so repetition cannot duplicate a row.
+async fn record_restore_repairs(
+    transaction: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+    run_id: Uuid,
+    account_id: Uuid,
+) -> Result<(), crate::database::PersistenceError> {
+    sqlx::query(
+        "insert into github_catalog.reconciliation_repairs
+             (sync_run_id, repository_id, action)
+         select $1, r.repository_id, 'restore_after_miss'
+         from github_catalog.snapshot_items si
+         join github_catalog.repositories r
+             on r.provider_repository_id = si.provider_repository_id
+         join github_catalog.current_star_state c
+             on c.account_id = $2 and c.repository_id = r.repository_id
+         where si.sync_run_id = $1 and not c.starred
+         on conflict do nothing",
+    )
+    .bind(run_id)
+    .bind(account_id)
+    .execute(&mut **transaction)
+    .await
+    .map_err(crate::database::PersistenceError::Query)?;
+    Ok(())
+}
+
+/// Re-anchors the account's incremental baseline from this completed
+/// enumeration: the watermark moves to the newest observed provider
+/// starred-at, guarded so it never retreats. An enumeration that observed
+/// no timestamps leaves any existing mark alone rather than inventing one.
+async fn reanchor_watermark(
+    transaction: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+    run_id: Uuid,
+    account_id: Uuid,
+) -> Result<(), crate::database::PersistenceError> {
+    sqlx::query(
+        "insert into github_catalog.star_watermarks (account_id, high_water_mark)
+         select $2, anchored.newest from (
+             select max(si.provider_starred_at) as newest
+             from github_catalog.snapshot_items si
+             where si.sync_run_id = $1 and si.provider_starred_at is not null
+         ) anchored
+         where anchored.newest is not null
+         on conflict (account_id) do update set
+             high_water_mark = greatest(
+                 github_catalog.star_watermarks.high_water_mark,
+                 excluded.high_water_mark),
+             updated_at = now()",
+    )
+    .bind(run_id)
+    .bind(account_id)
+    .execute(&mut **transaction)
+    .await
+    .map_err(crate::database::PersistenceError::Query)?;
+    Ok(())
 }
 
 /// Counts repositories this snapshot saw that were not starred before it.
@@ -425,9 +489,20 @@ async fn unstar_absent_repositories(
             "insert into github_catalog.star_observations
                  (observation_id, account_id, repository_id, starred,
                   provider_starred_at, observed_at)
-             values (gen_random_uuid(), $1, $2, false, null, now())",
+              values (gen_random_uuid(), $1, $2, false, null, now())",
         )
         .bind(account_id)
+        .bind(repository_id)
+        .execute(&mut **transaction)
+        .await
+        .map_err(crate::database::PersistenceError::Query)?;
+        sqlx::query(
+            "insert into github_catalog.reconciliation_repairs
+                 (sync_run_id, repository_id, action)
+              values ($1, $2, 'unstar_after_drift')
+              on conflict do nothing",
+        )
+        .bind(run_id)
         .bind(repository_id)
         .execute(&mut **transaction)
         .await

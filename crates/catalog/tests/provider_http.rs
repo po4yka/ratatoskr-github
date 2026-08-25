@@ -252,3 +252,67 @@ async fn starred_listing_serves_pages_with_rate_headers_and_starred_at()
     server.verify().await;
     Ok(())
 }
+
+#[tokio::test]
+async fn newest_first_listing_requests_sort_created_direction_desc()
+-> Result<(), Box<dyn std::error::Error>> {
+    let server = MockServer::start().await;
+
+    Mock::given(method("GET"))
+        .and(path("/user/starred"))
+        .and(query_param("page", "1"))
+        .and(query_param("sort", "created"))
+        .and(query_param("direction", "desc"))
+        .and(header("accept", "application/vnd.github.star+json"))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .set_body_string(format!(
+                    "[{}]",
+                    starred_item(300_000_004, "acme/delta", "2026-04-04T00:00:00Z")
+                ))
+                .insert_header("x-ratelimit-limit", "5000")
+                .insert_header("x-ratelimit-remaining", "4998")
+                .insert_header("x-ratelimit-reset", "1787000000"),
+        )
+        .expect(1)
+        .mount(&server)
+        .await;
+
+    let gateway = ReqwestGithubApi::for_base_url(&server.uri())?;
+
+    let reply = gateway.list_starred_newest_first(None, 1).await?;
+    assert_eq!(
+        reply.page.items.len(),
+        1,
+        "the newest-first page must carry its item"
+    );
+    assert_eq!(
+        reply.page.items[0].starred_at.as_deref(),
+        Some("2026-04-04T00:00:00Z"),
+        "the newest-first listing must surface provider starred-at for watermarking"
+    );
+    assert_eq!(
+        reply.rate_limit.remaining,
+        Some(4998),
+        "listing replies must carry rate-limit headers for the shared ledger"
+    );
+
+    let received = server.received_requests().await.unwrap_or_default();
+    let requested_pages: Vec<String> = received
+        .iter()
+        .filter_map(|request| {
+            request
+                .url
+                .query_pairs()
+                .find_map(|(key, value)| (key == "page").then(|| value.into_owned()))
+        })
+        .collect();
+    assert_eq!(
+        requested_pages,
+        ["1"],
+        "the newest-first call must address exactly the requested page"
+    );
+
+    server.verify().await;
+    Ok(())
+}

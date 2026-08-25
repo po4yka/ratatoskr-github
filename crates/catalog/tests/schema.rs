@@ -2,6 +2,7 @@
 
 use ratatoskr_github_catalog::test_support::TestDatabase;
 use sqlx::Row as _;
+use uuid::Uuid;
 
 #[tokio::test]
 async fn owned_schema_applies_twice_without_cross_schema_objects()
@@ -27,6 +28,7 @@ async fn owned_schema_applies_twice_without_cross_schema_objects()
             "github_accounts",
             "inbox_events",
             "outbox_events",
+            "reconciliation_repairs",
             "repositories",
             "repository_aliases",
             "repository_metadata",
@@ -36,6 +38,7 @@ async fn owned_schema_applies_twice_without_cross_schema_objects()
             "star_list_memberships",
             "star_lists",
             "star_observations",
+            "star_watermarks",
             "sync_checkpoints",
             "sync_runs",
         ]
@@ -150,6 +153,95 @@ async fn placeholder_tables_carry_the_decided_identity_rules()
     assert!(
         conflicting_live_alias.is_err(),
         "a live owner/name alias must have exactly one holding repository"
+    );
+
+    database.cleanup().await?;
+    Ok(())
+}
+
+/// A drift repair names a known action; the (run, repository) pair admits
+/// one row so repeated reconciliation cannot duplicate a recorded repair.
+#[tokio::test]
+async fn reconciliation_repairs_carry_named_actions_once_per_run()
+-> Result<(), Box<dyn std::error::Error>> {
+    let database = TestDatabase::create().await?;
+    sqlx::query(
+        "insert into github_catalog.github_accounts (account_id, owner_ref, status)
+         values ($1, 'repairer', 'connected')",
+    )
+    .bind(uuid::Uuid::now_v7())
+    .execute(database.database.pool())
+    .await?;
+    for (provider_id, name) in [(990_101_i64, "acme/drifted"), (990_102_i64, "acme/other")] {
+        let identity =
+            ratatoskr_github_catalog::upsert_repository(&database.database, provider_id).await?;
+        sqlx::query(
+            "insert into github_catalog.repository_aliases
+                 (alias_id, repository_id, alias_kind, alias_value)
+             values ($1, $2, 'owner_name', $3)",
+        )
+        .bind(uuid::Uuid::now_v7())
+        .bind(identity.repository_id)
+        .bind(name)
+        .execute(database.database.pool())
+        .await?;
+    }
+    let run_id = uuid::Uuid::now_v7();
+    sqlx::query(
+        "insert into github_catalog.sync_runs (sync_run_id, account_id, mode, status)
+         values ($1,
+                 (select account_id from github_catalog.github_accounts where owner_ref = 'repairer'),
+                 'full', 'running')",
+    )
+    .bind(run_id)
+    .execute(database.database.pool())
+    .await?;
+    let drifted: Uuid = sqlx::query_scalar(
+        "select repository_id from github_catalog.repository_aliases where alias_value = 'acme/drifted'",
+    )
+    .fetch_one(database.database.pool())
+    .await?;
+    let other: Uuid = sqlx::query_scalar(
+        "select repository_id from github_catalog.repository_aliases where alias_value = 'acme/other'",
+    )
+    .fetch_one(database.database.pool())
+    .await?;
+
+    let first_repair = sqlx::query(
+        "insert into github_catalog.reconciliation_repairs
+             (sync_run_id, repository_id, action)
+         values ($1, $2, 'unstar_after_drift')",
+    )
+    .bind(run_id)
+    .bind(drifted)
+    .execute(database.database.pool())
+    .await?;
+    assert_eq!(first_repair.rows_affected(), 1);
+    let duplicate_repair = sqlx::query(
+        "insert into github_catalog.reconciliation_repairs
+             (sync_run_id, repository_id, action)
+         values ($1, $2, 'unstar_after_drift')",
+    )
+    .bind(run_id)
+    .bind(drifted)
+    .execute(database.database.pool())
+    .await;
+    assert!(
+        duplicate_repair.is_err(),
+        "one drifted repository admits exactly one repair per completing run"
+    );
+    let unknown_action = sqlx::query(
+        "insert into github_catalog.reconciliation_repairs
+             (sync_run_id, repository_id, action)
+         values ($1, $2, 'unstar_because_full')",
+    )
+    .bind(run_id)
+    .bind(other)
+    .execute(database.database.pool())
+    .await;
+    assert!(
+        unknown_action.is_err(),
+        "a drift repair must name a known action"
     );
 
     database.cleanup().await?;
