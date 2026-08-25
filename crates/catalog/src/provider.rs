@@ -3,12 +3,22 @@
 //! Provider response types stay inside this adapter boundary and never leak
 //! into domain state unnormalized.
 
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 
 use crate::rate_limit::RateLimitHeaders;
 
 /// Fixed page size for starred-listing enumeration.
 const STARRED_PAGE_SIZE: u32 = 100;
+
+/// The one GraphQL document star-list enumeration issues: the authenticated
+/// user's lists with their repository memberships inline, plus the reply's
+/// rate-limit accounting. Field names follow the public dotcom schema. The
+/// inline `100`s are the provider's maximum connection page size.
+const USER_LISTS_QUERY: &str = "query($after: String) { viewer { \
+lists(first: 100, after: $after) { pageInfo { hasNextPage endCursor } \
+edges { node { id name items(first: 100) { pageInfo { hasNextPage } \
+edges { node { ... on Repository { databaseId nameWithOwner } } } } } } } } \
+rateLimit { cost remaining resetAt } }";
 
 /// Owner and name of a repository as GitHub spells it.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -91,6 +101,47 @@ pub struct ListingReply {
     /// The decoded page.
     pub page: StarredPage,
     /// Rate-limit headers from the same response.
+    pub rate_limit: RateLimitHeaders,
+}
+
+/// One repository observed inside a native star list.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ListedRepository {
+    /// GitHub's stable numeric repository ID.
+    pub provider_repository_id: i64,
+    /// The `owner/name` the list entry declared.
+    pub full_name: String,
+}
+
+/// One native star list as one enumeration page saw it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct UserListNode {
+    /// The stable provider list identity (the GraphQL node id).
+    pub provider_list_id: String,
+    /// The list name as currently spelled upstream.
+    pub name: String,
+    /// True when the list holds more items than this page carried; a
+    /// truncated enumeration must never become authority.
+    pub items_truncated: bool,
+    /// The repositories this page saw inside the list.
+    pub items: Vec<ListedRepository>,
+}
+
+/// One page of the native star-list enumeration.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct UserListsPage {
+    /// The lists of this page; an empty page terminates enumeration.
+    pub lists: Vec<UserListNode>,
+    /// The continuation token for the next page, when one exists.
+    pub next_cursor: Option<String>,
+}
+
+/// One star-list enumeration page reply with its rate-limit data.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct UserListsReply {
+    /// The decoded page.
+    pub page: UserListsPage,
+    /// Rate-limit data from the same response.
     pub rate_limit: RateLimitHeaders,
 }
 
@@ -198,6 +249,20 @@ pub trait GithubApi {
         token: Option<&str>,
         page: u32,
     ) -> impl std::future::Future<Output = Result<ListingReply, ProviderError>> + Send;
+
+    /// Fetches one page of the authenticated account's native star lists
+    /// with their repository memberships, addressed by the continuation
+    /// token recorded with the previous page (absent for the first page).
+    /// An empty page terminates enumeration.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ProviderError`] classifications for caller handling.
+    fn list_user_lists(
+        &self,
+        token: Option<&str>,
+        cursor: Option<&str>,
+    ) -> impl std::future::Future<Output = Result<UserListsReply, ProviderError>> + Send;
 }
 
 /// Reads rate-limit headers off a response, tolerating absent values.
@@ -220,6 +285,36 @@ fn rate_headers_from(headers: &reqwest::header::HeaderMap) -> RateLimitHeaders {
     }
 }
 
+/// Maps one GraphQL reply's accounting onto the shared ledger shape:
+/// response headers win when present, and otherwise the in-body
+/// `rateLimit` object supplies remaining and reset.
+fn graphql_rate_limit(
+    header_rate: RateLimitHeaders,
+    body_rate: Option<&GraphqlRateLimit>,
+) -> RateLimitHeaders {
+    let from_headers = header_rate.limit.is_some()
+        || header_rate.remaining.is_some()
+        || header_rate.reset_epoch_seconds.is_some();
+    if from_headers || body_rate.is_none() {
+        return header_rate;
+    }
+    RateLimitHeaders {
+        limit: None,
+        remaining: body_rate.and_then(|rate| rate.remaining),
+        reset_epoch_seconds: body_rate
+            .and_then(|rate| rate.reset_at.as_deref())
+            .and_then(rfc3339_epoch),
+        retry_after_seconds: None,
+    }
+}
+
+/// Parses an RFC 3339 timestamp into whole epoch seconds.
+fn rfc3339_epoch(value: &str) -> Option<i64> {
+    time::OffsetDateTime::parse(value, &time::format_description::well_known::Rfc3339)
+        .ok()
+        .map(time::OffsetDateTime::unix_timestamp)
+}
+
 /// The reqwest-backed gateway to the GitHub REST API.
 ///
 /// Redirect following stays disabled on purpose: a permanent move must
@@ -229,6 +324,111 @@ fn rate_headers_from(headers: &reqwest::header::HeaderMap) -> RateLimitHeaders {
 pub struct ReqwestGithubApi {
     http: reqwest::Client,
     base_url: String,
+}
+
+/// The request body of one star-list enumeration page.
+#[derive(Debug, Serialize)]
+struct GraphqlBody<'a> {
+    query: &'static str,
+    variables: GraphqlVariables<'a>,
+}
+
+/// The variables of one star-list enumeration page; `after` carries the
+/// continuation token recorded with the previous page.
+#[derive(Debug, Serialize)]
+struct GraphqlVariables<'a> {
+    after: Option<&'a str>,
+}
+
+/// The GraphQL response envelope of one star-list enumeration page.
+#[derive(Debug, Deserialize)]
+struct UserListsEnvelope {
+    data: UserListsData,
+}
+
+/// The `data` member of a star-list enumeration reply.
+#[derive(Debug, Deserialize)]
+struct UserListsData {
+    viewer: UserListsViewer,
+    #[serde(rename = "rateLimit")]
+    rate_limit: Option<GraphqlRateLimit>,
+}
+
+/// The `viewer` member of a star-list enumeration reply.
+#[derive(Debug, Deserialize)]
+struct UserListsViewer {
+    lists: UserListsConnection,
+}
+
+/// The lists connection with its continuation state.
+#[derive(Debug, Deserialize)]
+struct UserListsConnection {
+    #[serde(rename = "pageInfo")]
+    page_info: ConnectionPageInfo,
+    edges: Vec<UserListEdge>,
+}
+
+/// Relay page info carrying the next continuation token.
+#[derive(Debug, Deserialize)]
+struct ConnectionPageInfo {
+    #[serde(rename = "hasNextPage")]
+    #[allow(dead_code)]
+    has_next_page: bool,
+    #[serde(rename = "endCursor")]
+    end_cursor: Option<String>,
+}
+
+/// One list edge; null edges are tolerated and skipped.
+#[derive(Debug, Deserialize)]
+struct UserListEdge {
+    node: Option<UserListNodeWire>,
+}
+
+/// One native list as the provider spells it.
+#[derive(Debug, Deserialize)]
+struct UserListNodeWire {
+    id: String,
+    name: String,
+    items: Option<UserListItemsConnection>,
+}
+
+/// One list's item connection.
+#[derive(Debug, Deserialize)]
+struct UserListItemsConnection {
+    #[serde(rename = "pageInfo")]
+    page_info: ItemsPageInfo,
+    edges: Vec<UserListItemEdge>,
+}
+
+/// Item-connection page info; only truncation matters to authority.
+#[derive(Debug, Deserialize)]
+struct ItemsPageInfo {
+    #[serde(rename = "hasNextPage")]
+    has_next_page: bool,
+}
+
+/// One item edge; null edges are tolerated and skipped.
+#[derive(Debug, Deserialize)]
+struct UserListItemEdge {
+    node: Option<RepositoryNode>,
+}
+
+/// The repository fragment an item node resolves to when it is a
+/// repository; non-repository nodes carry neither field and are skipped.
+#[derive(Debug, Deserialize)]
+struct RepositoryNode {
+    #[serde(rename = "databaseId")]
+    database_id: Option<i64>,
+    #[serde(rename = "nameWithOwner")]
+    name_with_owner: Option<String>,
+}
+
+/// The in-body rate-limit accounting of a GraphQL reply.
+#[derive(Debug, Deserialize)]
+struct GraphqlRateLimit {
+    remaining: Option<i64>,
+    #[serde(rename = "resetAt")]
+    reset_at: Option<String>,
 }
 
 impl ReqwestGithubApi {
@@ -375,6 +575,76 @@ impl GithubApi for ReqwestGithubApi {
     ) -> Result<ListingReply, ProviderError> {
         self.list_starred_with(token, page, &[("sort", "created"), ("direction", "desc")])
             .await
+    }
+
+    async fn list_user_lists(
+        &self,
+        token: Option<&str>,
+        cursor: Option<&str>,
+    ) -> Result<UserListsReply, ProviderError> {
+        let url = format!("{}/graphql", self.base_url);
+        let mut request = self.http.post(url).json(&GraphqlBody {
+            query: USER_LISTS_QUERY,
+            variables: GraphqlVariables { after: cursor },
+        });
+        if let Some(token) = token {
+            request = request.bearer_auth(token);
+        }
+        let response = request.send().await.map_err(ProviderError::Transport)?;
+        let header_rate = rate_headers_from(response.headers());
+        let envelope = match response.status() {
+            reqwest::StatusCode::OK => {
+                let envelope: UserListsEnvelope =
+                    response.json().await.map_err(ProviderError::Transport)?;
+                envelope
+            }
+            reqwest::StatusCode::UNAUTHORIZED | reqwest::StatusCode::FORBIDDEN => {
+                return Err(ProviderError::Unauthorized);
+            }
+            status => {
+                return Err(ProviderError::UnexpectedStatus {
+                    status: status.as_u16(),
+                });
+            }
+        };
+
+        let lists = envelope
+            .data
+            .viewer
+            .lists
+            .edges
+            .into_iter()
+            .filter_map(|edge| edge.node)
+            .map(|node| UserListNode {
+                provider_list_id: node.id,
+                name: node.name,
+                items_truncated: node
+                    .items
+                    .as_ref()
+                    .is_some_and(|items| items.page_info.has_next_page),
+                items: node
+                    .items
+                    .map(|items| items.edges)
+                    .unwrap_or_default()
+                    .into_iter()
+                    .filter_map(|item| item.node)
+                    .filter_map(|repo| {
+                        Some(ListedRepository {
+                            provider_repository_id: repo.database_id?,
+                            full_name: repo.name_with_owner?,
+                        })
+                    })
+                    .collect(),
+            })
+            .collect();
+        let rate_limit = graphql_rate_limit(header_rate, envelope.data.rate_limit.as_ref());
+        Ok(UserListsReply {
+            page: UserListsPage {
+                lists,
+                next_cursor: envelope.data.viewer.lists.page_info.end_cursor,
+            },
+            rate_limit,
+        })
     }
 }
 

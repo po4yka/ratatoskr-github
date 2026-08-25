@@ -18,6 +18,7 @@ mod observe;
 pub mod provider;
 pub mod rate_limit;
 mod snapshot;
+mod star_lists;
 mod telemetry;
 
 #[cfg(feature = "test-support")]
@@ -37,4 +38,8 @@ pub use incremental::{IncrementalScanError, IncrementalScanOutcome, run_incremen
 pub use metadata::{AppliedOutcome, REVISION_HISTORY_LIMIT, apply_fresh_body, apply_not_modified};
 pub use observe::{ObserveError, ObserveOutcome, observe_repository};
 pub use snapshot::{FullSnapshotOutcome, SnapshotError, run_full_snapshot};
+pub use star_lists::{
+    ListMember, StarListSnapshotOutcome, StarListSummary, StarListsError, current_list_members,
+    current_star_lists, run_star_list_snapshot,
+};
 pub use telemetry::{TelemetryError, init_telemetry};

@@ -21,6 +21,7 @@ use crate::incremental::{IncrementalScanError, IncrementalScanOutcome, run_incre
 use crate::provider::{GithubApi, ProviderError};
 use crate::rate_limit::{RateLimitLedger, TokenRef};
 use crate::snapshot::{FullSnapshotOutcome, SnapshotError, run_full_snapshot};
+use crate::star_lists::{StarListSnapshotOutcome, StarListsError, run_star_list_snapshot};
 
 /// The contract type this catalog consumes its own sync commands as,
 /// published by the platform scheduler to `cmd.` plus this name.
@@ -50,6 +51,9 @@ pub struct HandledSyncCommand {
     /// The full-snapshot outcome when a full snapshot ran, whether by
     /// direct request, by baseline-less deferral, or as a gap-forced rescan.
     pub full: Option<FullSnapshotOutcome>,
+    /// The independent star-list snapshot outcome every handled command
+    /// attempts after the star-mode dispatch.
+    pub star_lists: Option<StarListSnapshotOutcome>,
 }
 
 /// How the delivery of one command ended.
@@ -89,6 +93,9 @@ pub enum SyncCommandError {
     /// The dispatched incremental-scan flow failed.
     #[error(transparent)]
     Incremental(#[from] IncrementalScanError),
+    /// The dispatched star-list snapshot flow failed.
+    #[error(transparent)]
+    StarLists(#[from] StarListsError),
 }
 
 /// What strict envelope validation extracts for dispatch.
@@ -151,6 +158,7 @@ where
         requested_mode: validated.requested_mode,
         incremental: None,
         full: None,
+        star_lists: None,
     };
     match validated.requested_mode {
         RequestedSyncMode::Incremental => {
@@ -173,6 +181,13 @@ where
                 Some(run_full_snapshot(database, gateway, ledger, token, account_id).await?);
         }
     }
+
+    // Every handled command also refreshes the account's native star lists.
+    // The list snapshot is an independent authority with its own run: its
+    // failure, pause, or completion never alters the star-mode outcome or
+    // its recorded effects, and vice versa.
+    handled.star_lists =
+        Some(run_star_list_snapshot(database, gateway, ledger, token, account_id).await?);
 
     sqlx::query(
         "update github_catalog.inbox_events set consumed_at = now()

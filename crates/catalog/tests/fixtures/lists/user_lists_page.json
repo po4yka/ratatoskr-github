@@ -1,0 +1,77 @@
+{
+  "data": {
+    "viewer": {
+      "lists": {
+        "totalCount": 2,
+        "pageInfo": {
+          "endCursor": "MQ",
+          "hasNextPage": true
+        },
+        "edges": [
+          {
+            "cursor": "MQ",
+            "node": {
+              "id": "gid://UserList/5021471",
+              "name": "Rust crates",
+              "items": {
+                "totalCount": 2,
+                "pageInfo": {
+                  "hasNextPage": false
+                },
+                "edges": [
+                  {
+                    "cursor": "Mg",
+                    "node": {
+                      "__typename": "Repository",
+                      "id": "gid://Repository/300000101",
+                      "databaseId": 300000101,
+                      "nameWithOwner": "acme/alpha"
+                    }
+                  },
+                  {
+                    "cursor": "Mw",
+                    "node": {
+                      "__typename": "Repository",
+                      "id": "gid://Repository/300000102",
+                      "databaseId": 300000102,
+                      "nameWithOwner": "acme/beta"
+                    }
+                  }
+                ]
+              }
+            }
+          },
+          {
+            "cursor": "Mg",
+            "node": {
+              "id": "gid://UserList/5021472",
+              "name": "Read later",
+              "items": {
+                "totalCount": 1,
+                "pageInfo": {
+                  "hasNextPage": false
+                },
+                "edges": [
+                  {
+                    "cursor": "NA",
+                    "node": {
+                      "__typename": "Repository",
+                      "id": "gid://Repository/300000103",
+                      "databaseId": 300000103,
+                      "nameWithOwner": "acme/gamma"
+                    }
+                  }
+                ]
+              }
+            }
+          }
+        ]
+      }
+    },
+    "rateLimit": {
+      "cost": 1,
+      "remaining": 4998,
+      "resetAt": "2026-08-25T22:00:00Z"
+    }
+  }
+}

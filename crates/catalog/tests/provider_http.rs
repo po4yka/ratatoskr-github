@@ -316,3 +316,90 @@ async fn newest_first_listing_requests_sort_created_direction_desc()
     server.verify().await;
     Ok(())
 }
+
+/// The committed synthetic GraphQL response pinning the star-list wire shape.
+const USER_LISTS_PAGE_FIXTURE: &str = include_str!("fixtures/lists/user_lists_page.json");
+
+#[tokio::test]
+async fn starred_lists_page_posts_graphql_query_and_normalizes_reply()
+-> Result<(), Box<dyn std::error::Error>> {
+    use time::format_description::well_known::Rfc3339;
+
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/graphql"))
+        .and(header("authorization", "Bearer token-1"))
+        .respond_with(ResponseTemplate::new(200).set_body_string(USER_LISTS_PAGE_FIXTURE))
+        .up_to_n_times(2)
+        .mount(&server)
+        .await;
+
+    let gateway = ReqwestGithubApi::for_base_url(&server.uri())?;
+
+    let first = gateway.list_user_lists(Some("token-1"), None).await?;
+    assert_eq!(
+        first.page.lists.len(),
+        2,
+        "the fixture's two lists must be normalized into list nodes"
+    );
+    let rust_crates = &first.page.lists[0];
+    assert_eq!(
+        rust_crates.provider_list_id, "gid://UserList/5021471",
+        "the stable GraphQL node id is the provider list identity"
+    );
+    assert_eq!(rust_crates.name, "Rust crates");
+    assert!(
+        !rust_crates.items_truncated,
+        "a list whose items fit one page is not truncated"
+    );
+    assert_eq!(
+        rust_crates
+            .items
+            .iter()
+            .map(|item| (item.provider_repository_id, item.full_name.as_str()))
+            .collect::<Vec<_>>(),
+        vec![
+            (300_000_101_i64, "acme/alpha"),
+            (300_000_102_i64, "acme/beta")
+        ],
+        "each listed repository carries its numeric id and owner/name"
+    );
+    assert_eq!(
+        first.page.next_cursor.as_deref(),
+        Some("MQ"),
+        "the lists connection's endCursor becomes the continuation token"
+    );
+    let expected_reset =
+        time::OffsetDateTime::parse("2026-08-25T22:00:00Z", &Rfc3339)?.unix_timestamp();
+    assert_eq!(
+        first.rate_limit.remaining,
+        Some(4998),
+        "the GraphQL rateLimit object must map onto the shared ledger shape"
+    );
+    assert_eq!(
+        first.rate_limit.reset_epoch_seconds,
+        Some(expected_reset),
+        "the rateLimit resetAt maps onto the ledger's reset epoch"
+    );
+
+    // The continuation token travels with the next request.
+    let _second = gateway.list_user_lists(Some("token-1"), Some("MQ")).await?;
+    let received = server.received_requests().await.unwrap_or_default();
+    assert_eq!(
+        received.len(),
+        2,
+        "exactly one request per enumeration call"
+    );
+    let second_request_body = String::from_utf8_lossy(&received[1].body);
+    assert!(
+        !String::from_utf8_lossy(&received[0].body).contains("MQ"),
+        "the first request must not carry a continuation token"
+    );
+    assert!(
+        second_request_body.contains("MQ"),
+        "the resumed request must carry the stored continuation token"
+    );
+
+    server.verify().await;
+    Ok(())
+}

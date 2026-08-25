@@ -271,6 +271,11 @@ pub(crate) async fn fail_run(
         .execute(&mut *transaction)
         .await
         .map_err(crate::database::PersistenceError::Query)?;
+    sqlx::query("delete from github_catalog.list_snapshot_items where sync_run_id = $1")
+        .bind(run_id)
+        .execute(&mut *transaction)
+        .await
+        .map_err(crate::database::PersistenceError::Query)?;
     transaction
         .commit()
         .await

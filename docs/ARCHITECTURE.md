@@ -272,7 +272,7 @@ GitHub-native star lists are external collections distinct from Ratatoskr-local 
 
 The model stores:
 
-- stable external list ID;
+- stable external list ID (the GraphQL node id);
 - name and description;
 - provider timestamps when available;
 - list observations;
@@ -281,7 +281,11 @@ The model stores:
 
 A repository can belong to multiple native lists and multiple local collections. These relationships are never collapsed into one category field.
 
-List reconciliation runs independently from the main star snapshot because provider APIs and failure modes differ.
+List reconciliation runs independently from the main star snapshot because provider APIs and failure modes differ. Lists are read through GitHub GraphQL only - REST v3 offers no list endpoints - via `User.lists` with each list's item connection requested inline. A list holding more items than one page carries is a truncated enumeration: the run fails naming the truncated list and authority stays untouched, per the truncation rule above. Relay cursors do not map to page integers, so checkpoints carry the continuation token instead.
+
+List snapshots follow the same atomic-authority discipline as stars: pages stage durably under cursor checkpoints, and one transaction promotes a completed enumeration into `star_lists`, `star_list_memberships`, and append-only `star_list_membership_observations`. Removals are inferred only from a complete successful enumeration, named as observation times (`observed_removed_at`), and bound to the establishing run; lists that disappear upstream are tombstoned with evidence, never deleted. The provider supplies no per-item added-at timestamp, so membership timing records observation times only.
+
+Star authority and list authority are independent dimensions: star synchronization never reads or writes list tables, list snapshots never read or write star tables, and every combination is representable and truthful - starred but unlisted, listed but unstarred, listed but never star-observed, and all else. Commanded synchronization refreshes both authorities in one handling, reporting each outcome separately; neither result alters the other's rows.
 
 ## 9. Repository metadata
 

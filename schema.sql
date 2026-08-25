@@ -92,9 +92,14 @@ create table if not exists github_catalog.sync_runs (
     items_observed  integer not null default 0,
     additions       integer not null default 0,
     unstars         integer not null default 0,
+    -- Star-list snapshot statistics: lists and membership transitions are a
+    -- separate authority from stars, so they carry their own counters instead
+    -- of stretching the star columns.
+    lists_observed  integer not null default 0,
+    removals        integer not null default 0,
     started_at  timestamptz not null default now(),
     finished_at timestamptz,
-    constraint sync_runs_mode_check check (mode in ('incremental', 'full')),
+    constraint sync_runs_mode_check check (mode in ('incremental', 'full', 'star_lists')),
     constraint sync_runs_status_check
         check (status in ('running', 'completed', 'failed', 'cancelled')),
     constraint sync_runs_finish_matches_terminal_status
@@ -111,6 +116,9 @@ create table if not exists github_catalog.sync_checkpoints (
     -- monotonicity guard across a resumed run. Null for full snapshots, whose page
     -- order carries no meaning.
     boundary_starred_at timestamptz,
+    -- Provider continuation token for cursor-paginated enumerations (star-list
+    -- snapshots over GraphQL). Null means the first page.
+    graphql_cursor text,
     recorded_at   timestamptz not null default now()
 );
 
@@ -121,6 +129,18 @@ create table if not exists github_catalog.snapshot_items (
     position               bigint not null,
     provider_repository_id bigint not null,
     provider_starred_at    timestamptz,
+    primary key (sync_run_id, position)
+);
+
+-- Durable per-run staging of what a star-list snapshot saw: one flat row per
+-- observed membership with its list identity denormalized; consumed by the
+-- list authority swap and cleared when the run reaches a terminal state.
+create table if not exists github_catalog.list_snapshot_items (
+    sync_run_id            uuid not null references github_catalog.sync_runs (sync_run_id),
+    position               bigint not null,
+    provider_list_id       text not null,
+    list_name              text not null,
+    provider_repository_id bigint not null,
     primary key (sync_run_id, position)
 );
 
@@ -176,20 +196,48 @@ create table if not exists github_catalog.reconciliation_repairs (
         check (action in ('unstar_after_drift', 'restore_after_miss'))
 );
 
+-- Native provider lists: the stable GraphQL node id is the provider identity;
+-- a list that disappears upstream is tombstoned with evidence, never deleted.
 create table if not exists github_catalog.star_lists (
     list_id          uuid primary key,
     account_id       uuid not null references github_catalog.github_accounts (account_id),
     provider_list_id text not null,
     name             text not null,
+    status           text not null default 'active',
+    observed_removed_at timestamptz,
+    evidence_run_id  uuid references github_catalog.sync_runs (sync_run_id),
     created_at       timestamptz not null default now(),
-    constraint star_lists_provider_identity_key unique (account_id, provider_list_id)
+    constraint star_lists_provider_identity_key unique (account_id, provider_list_id),
+    constraint star_lists_status_check check (status in ('active', 'removed')),
+    constraint star_lists_removal_evidence_check
+        check ((status = 'active') or (observed_removed_at is not null))
 );
 
+-- The current membership projection: rows persist across removals so every
+-- transition stays explainable. The provider supplies no per-item added-at,
+-- so membership timing is modeled purely as observation times.
 create table if not exists github_catalog.star_list_memberships (
     list_id       uuid not null references github_catalog.star_lists (list_id),
     repository_id uuid not null references github_catalog.repositories (repository_id),
-    added_at      timestamptz not null,
-    primary key (list_id, repository_id)
+    member        boolean not null,
+    last_observed_at timestamptz not null,
+    observed_removed_at timestamptz,
+    evidence_run_id uuid references github_catalog.sync_runs (sync_run_id),
+    primary key (list_id, repository_id),
+    constraint star_list_memberships_removal_evidence_check
+        check ((member = true) or (observed_removed_at is not null))
+);
+
+-- Observations are append-only membership evidence; the projection lives in
+-- star_list_memberships. Every completed enumeration appends one row per seen
+-- membership and one row per evidenced removal.
+create table if not exists github_catalog.star_list_membership_observations (
+    observation_id  uuid primary key,
+    list_id         uuid not null references github_catalog.star_lists (list_id),
+    repository_id   uuid not null references github_catalog.repositories (repository_id),
+    member          boolean not null,
+    observed_at     timestamptz not null,
+    evidence_run_id uuid references github_catalog.sync_runs (sync_run_id)
 );
 
 create table if not exists github_catalog.repository_watches (

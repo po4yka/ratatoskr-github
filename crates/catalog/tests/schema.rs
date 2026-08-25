@@ -4,6 +4,59 @@ use ratatoskr_github_catalog::test_support::TestDatabase;
 use sqlx::Row as _;
 use uuid::Uuid;
 
+/// A demoted list membership and a removed list each carry their removal
+/// evidence; neither state is representable without it.
+async fn assert_list_authority_carries_removal_evidence(
+    database: &TestDatabase,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let list_owner = Uuid::now_v7();
+    sqlx::query(
+        "insert into github_catalog.github_accounts (account_id, owner_ref, status)
+         values ($1, 'list-holder', 'connected')",
+    )
+    .bind(list_owner)
+    .execute(database.database.pool())
+    .await?;
+    let member_repo =
+        ratatoskr_github_catalog::upsert_repository(&database.database, 990_201_i64).await?;
+    let list_id = Uuid::now_v7();
+    sqlx::query(
+        "insert into github_catalog.star_lists (list_id, account_id, provider_list_id, name)
+         values ($1, $2, 'gid://list/one', 'reading list')",
+    )
+    .bind(list_id)
+    .bind(list_owner)
+    .execute(database.database.pool())
+    .await?;
+    let demotion_without_evidence = sqlx::query(
+        "insert into github_catalog.star_list_memberships
+             (list_id, repository_id, member, last_observed_at)
+         values ($1, $2, false, now())",
+    )
+    .bind(list_id)
+    .bind(member_repo.repository_id)
+    .execute(database.database.pool())
+    .await;
+    assert!(
+        demotion_without_evidence.is_err(),
+        "a non-member projection must record observed_removed_at"
+    );
+    let tombstone_without_evidence = sqlx::query(
+        "insert into github_catalog.star_lists
+             (list_id, account_id, provider_list_id, name, status)
+         values ($1, $2, 'gid://list/two', 'gone list', 'removed')",
+    )
+    .bind(Uuid::now_v7())
+    .bind(list_owner)
+    .execute(database.database.pool())
+    .await;
+    assert!(
+        tombstone_without_evidence.is_err(),
+        "a removed list must record observed_removed_at"
+    );
+    Ok(())
+}
+
 #[tokio::test]
 async fn owned_schema_applies_twice_without_cross_schema_objects()
 -> Result<(), Box<dyn std::error::Error>> {
@@ -27,6 +80,7 @@ async fn owned_schema_applies_twice_without_cross_schema_objects()
             "current_star_state",
             "github_accounts",
             "inbox_events",
+            "list_snapshot_items",
             "outbox_events",
             "reconciliation_repairs",
             "repositories",
@@ -35,6 +89,7 @@ async fn owned_schema_applies_twice_without_cross_schema_objects()
             "repository_metadata_revisions",
             "repository_watches",
             "snapshot_items",
+            "star_list_membership_observations",
             "star_list_memberships",
             "star_lists",
             "star_observations",
@@ -115,6 +170,8 @@ async fn placeholder_tables_carry_the_decided_identity_rules()
         starred_without_starred_at.is_err(),
         "a starred state must carry its establishing starred-at timestamp"
     );
+
+    assert_list_authority_carries_removal_evidence(&database).await?;
 
     // One live holder per alias value: a second repository claiming an active
     // owner/name is rejected, while superseded history stays out of the way.

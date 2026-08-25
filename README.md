@@ -2,7 +2,7 @@
 
 `ratatoskr-github` is the GitHub Catalog bounded context for Ratatoskr. It records what repositories a user has starred or chosen to track, preserves GitHub metadata and list membership, coordinates repository analysis, and publishes the desired backup state consumed by Git Vault.
 
-> **Status:** implementation plan items 1, 3, 4, and 5 are complete: a Rust service runs locally with typed strict configuration, structured telemetry, operator health routes (`/live`, `/ready`, `/metrics`, `/version`), the first-version `github_catalog` schema applied at startup, stable repository identity keyed by GitHub's numeric ID, mutable aliases with redirect history across renames and transfers, metadata projection refreshed through conditional requests (ETag/304), per-token rate-limit accounting shared across operations, bounded metadata revision history, full star snapshots that enumerate the whole starred listing under rate budgets, resume from durable checkpoints, swap star authority atomically in one transaction, record unstars as evidenced observations, watermark-governed incremental scans that never infer removals and force a full rescan on any ordering gap, recorded idempotent drift repairs inside the reconciliation swap, and consumption of the platform scheduler's `github.sync.requested.v1` commands through a durable idempotent inbox. Account credentials, native star lists, mutations, public APIs, and event handlers described below are planned and are not implemented yet.
+> **Status:** implementation plan items 1, 3, 4, 5, and 6 are complete: a Rust service runs locally with typed strict configuration, structured telemetry, operator health routes (`/live`, `/ready`, `/metrics`, `/version`), the first-version `github_catalog` schema applied at startup, stable repository identity keyed by GitHub's numeric ID, mutable aliases with redirect history across renames and transfers, metadata projection refreshed through conditional requests (ETag/304), per-token rate-limit accounting shared across operations, bounded metadata revision history, full star snapshots that enumerate the whole starred listing under rate budgets, resume from durable checkpoints, swap star authority atomically in one transaction, record unstars as evidenced observations, watermark-governed incremental scans that never infer removals and force a full rescan on any ordering gap, recorded idempotent drift repairs inside the reconciliation swap, consumption of the platform scheduler's `github.sync.requested.v1` commands through a durable idempotent inbox, and native star-list snapshots enumerated over GraphQL under cursor checkpoints that swap list authority atomically, record membership diffs as evidenced observations, tombstone vanished lists, and refuse truncated enumerations. Account credentials, mutations, public APIs, and event handlers described below are planned and are not implemented yet.
 
 > [!IMPORTANT]
 > **Ratatoskr is in development.** No database holds data that has to survive a schema change.
@@ -175,7 +175,15 @@ star_lists
 star_list_memberships
 ```
 
-List reconciliation is independent from the REST starred-repository scan and may use GitHub GraphQL. A list-sync failure must not invalidate an otherwise successful star snapshot.
+Lists are read through GitHub GraphQL only - REST v3 offers no list endpoints - via `User.lists` with each list's item connection requested inline. Enumeration pages stage durably under cursor checkpoints, and one atomic transaction promotes a completed enumeration into list authority: renames propagate, staged pairs become members, absent pairs become evidenced removals, and lists that vanished upstream are tombstoned with an inferred observation time instead of deleted.
+
+The same invariant governs lists as stars:
+
+> Absence from a partial enumeration proves nothing. Only a successful complete enumeration can establish membership removal or a removed list.
+
+A list whose membership exceeds one provider page is a truncated enumeration: the run fails naming the truncated list and authority stays untouched. The provider supplies no per-item added-at timestamp, so membership timing records observation times only. Membership diffs are recorded as append-only observations bound to the completing run, so repeating reconciliation on converged state adds confirmations but no second removal evidence.
+
+List reconciliation is independent from the star snapshot: every handled sync command refreshes both authorities and reports each outcome separately, so a list-sync failure never invalidates an otherwise successful star snapshot and vice versa. Star state and list state are independent dimensions - starred but unlisted, listed but unstarred, listed but never star-observed, and every other combination are representable and truthful; a list snapshot never creates, alters, or removes any star state.
 
 Native list membership is treated as derived upstream state. Local Ratatoskr collections remain owned by the appropriate product context and must not be overwritten by GitHub reconciliation.
 
@@ -350,9 +358,11 @@ would emit them.
 
 The authoritative sequence is [`docs/IMPLEMENTATION_PLAN.md`](docs/IMPLEMENTATION_PLAN.md). Items 1
 and 3 (service foundation; repository identity and metadata), item 4 (full star snapshots with
-atomic authority, checkpoints, and evidenced unstars), and item 5 (watermark-governed incremental
-scans with gap-forced rescans, recorded drift repairs, and platform-scheduler command consumption)
-are implemented. Items 2 and 6 through 10 remain planned.
+atomic authority, checkpoints, and evidenced unstars), item 5 (watermark-governed incremental
+scans with gap-forced rescans, recorded drift repairs, and platform-scheduler command consumption),
+and item 6 (native star-list snapshots over GraphQL with atomic list authority, evidenced
+membership observations, tombstones, and truncation refusal) are implemented. Items 2 and 7
+through 10 remain planned.
 
 ## Workspace integration
 
@@ -363,4 +373,4 @@ remains independently buildable and testable.
 
 ## Project status
 
-The process foundation (configuration, telemetry, operator health, owned schema), repository identity with metadata, full snapshots, incremental scans with scheduled reconciliation via consumed sync commands are implemented and gated by CI. Account connections (credential storage), mutations, public APIs, star lists, watches, and event publication do not exist yet; those sections above describe the intended GitHub Catalog architecture.
+The process foundation (configuration, telemetry, operator health, owned schema), repository identity with metadata, full snapshots, incremental scans with scheduled reconciliation via consumed sync commands, and native star-list snapshots chained independently onto every commanded sync are implemented and gated by CI. Account connections (credential storage), mutations, public APIs, watches, and event publication do not exist yet; those sections above describe the intended GitHub Catalog architecture.

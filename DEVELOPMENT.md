@@ -3,7 +3,7 @@
 > Status: Active  
 > Last reviewed: 2026-08-23
 
-The service foundation is implemented: a Rust workspace with typed configuration, structured telemetry, operator health routes, and the first-version `github_catalog` schema. Repository identity, mutable aliases with redirect history, metadata projection with conditional requests, per-token rate-limit accounting, and bounded revision history are implemented on that foundation, as are full star snapshots: complete enumeration under rate budgets, durable resumable checkpoints, atomic authority swap in one transaction, and evidenced unstar observations. Account credentials, incremental scans, star lists, mutations, and event handling are not implemented.
+The service foundation is implemented: a Rust workspace with typed configuration, structured telemetry, operator health routes, and the first-version `github_catalog` schema. Repository identity, mutable aliases with redirect history, metadata projection with conditional requests, per-token rate-limit accounting, and bounded revision history are implemented on that foundation, as are full star snapshots: complete enumeration under rate budgets, durable resumable checkpoints, atomic authority swap in one transaction, and evidenced unstar observations. Incremental scans with watermark governance and gap-forced rescans run on a consumed schedule. Native star lists snapshot over GraphQL under cursor checkpoints with the same atomic authority, evidenced membership observations, tombstoned lists, and truncation refusal, chained independently onto every commanded sync. Account credentials, mutations, and event handling are not implemented.
 
 ## Toolchain and gate
 

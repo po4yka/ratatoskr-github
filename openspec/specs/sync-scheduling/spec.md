@@ -45,3 +45,17 @@ The catalog SHALL NOT implement schedule registration. The deployment documentat
 
 - **WHEN** an operator follows this repository's deployment documentation
 - **THEN** they find registration statements inserting a frequent incremental and a periodic full reconciliation schedule into platform's schedule table, created disabled and enabled explicitly, matching platform's published grammar and column rules
+
+### Requirement: Commanded sync refreshes star lists independently
+
+After dispatching the requested star mode for a handled sync command, the catalog SHALL attempt a star-list snapshot for the same account and SHALL report both outcomes; a list-snapshot failure, pause, or completion SHALL NOT alter the star-mode outcome or its recorded effects, and the star-mode result SHALL NOT suppress the list snapshot.
+
+#### Scenario: A commanded full sync also snapshots lists
+
+- **WHEN** a well-formed command requesting mode `full` is handled
+- **THEN** the handling reports the completed full-mode star run and a separate completed `star_lists` run for the same account
+
+#### Scenario: A list failure never invalidates the star outcome
+
+- **WHEN** the star-mode dispatch completes successfully but the chained list snapshot fails
+- **THEN** the report carries the successful star outcome unchanged alongside the failed list outcome, and all star rows from the star run remain exactly as written

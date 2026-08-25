@@ -6,10 +6,12 @@ use ratatoskr_github_catalog::provider::ReqwestGithubApi;
 use ratatoskr_github_catalog::rate_limit::{RateLimitLedger, TokenRef};
 use ratatoskr_github_catalog::test_support::TestDatabase;
 use ratatoskr_github_catalog::{
-    ConsumedSyncCommand, IncrementalScanOutcome, RequestedSyncMode, handle_sync_command,
+    ConsumedSyncCommand, FullSnapshotOutcome, IncrementalScanOutcome, RequestedSyncMode,
+    StarListSnapshotOutcome, handle_sync_command,
 };
+use serde_json::json;
 use uuid::Uuid;
-use wiremock::matchers::{header, method, path, query_param};
+use wiremock::matchers::{body_string_contains, header, method, path, query_param};
 use wiremock::{Match, Mock, MockServer, Request, ResponseTemplate};
 
 /// Builds one platform scheduler command envelope for `github.sync.requested.v1`.
@@ -144,6 +146,225 @@ async fn mount_unordered_page(
     Ok(())
 }
 
+/// Mounts one GraphQL star-list enumeration page matched by continuation.
+async fn mount_graphql_page(
+    server: &MockServer,
+    carries_cursor: bool,
+    body: String,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let continuation = if carries_cursor {
+        r#""after":"MQ""#
+    } else {
+        r#""after":null"#
+    };
+    Mock::given(method("POST"))
+        .and(path("/graphql"))
+        .and(body_string_contains(continuation))
+        .respond_with(ResponseTemplate::new(200).set_body_string(body))
+        .up_to_n_times(2)
+        .mount(server)
+        .await;
+    Ok(())
+}
+
+/// Mounts the empty GraphQL enumeration the chained star-list snapshot
+/// fetches when a test's focus is the star-mode flow.
+async fn mount_empty_graphql(server: &MockServer) -> Result<(), Box<dyn std::error::Error>> {
+    Mock::given(method("POST"))
+        .and(path("/graphql"))
+        .and(body_string_contains(r#""after":null"#))
+        .respond_with(ResponseTemplate::new(200).set_body_string(lists_page(&[], None)))
+        .up_to_n_times(1)
+        .mount(server)
+        .await;
+    Ok(())
+}
+
+fn list_edge(gid: &str, name: &str, database_id: i64, name_with_owner: &str) -> serde_json::Value {
+    json!({
+        "node": {
+            "id": gid,
+            "name": name,
+            "items": {
+                "pageInfo": {"hasNextPage": false},
+                "edges": [
+                    {"node": {"__typename": "Repository", "databaseId": database_id, "nameWithOwner": name_with_owner}}
+                ]
+            }
+        }
+    })
+}
+
+fn lists_page(edges: &[serde_json::Value], end_cursor: Option<&str>) -> String {
+    json!({
+        "data": {
+            "viewer": {
+                "lists": {
+                    "pageInfo": {"hasNextPage": true, "endCursor": end_cursor},
+                    "edges": edges,
+                }
+            },
+            "rateLimit": {"cost": 1, "remaining": 4998, "resetAt": "2026-08-25T22:00:00Z"},
+        }
+    })
+    .to_string()
+}
+
+#[tokio::test]
+async fn commanded_full_sync_chains_independent_list_snapshot()
+-> Result<(), Box<dyn std::error::Error>> {
+    let database = TestDatabase::create().await?;
+    let account_id = seed_account(&database.database, "tester").await?;
+    let server = MockServer::start().await;
+
+    mount_unordered_page(
+        &server,
+        1,
+        format!(
+            "[{}]",
+            starred_item(300_000_085, "acme/commanded-full", "2026-06-20T00:00:00Z")
+        ),
+    )
+    .await?;
+    mount_unordered_page(&server, 2, "[]".to_owned()).await?;
+    mount_graphql_page(
+        &server,
+        false,
+        lists_page(
+            &[list_edge(
+                "gid://UserList/7",
+                "commanded list",
+                300_000_085,
+                "acme/commanded-full",
+            )],
+            Some("MQ"),
+        ),
+    )
+    .await?;
+    mount_graphql_page(&server, true, lists_page(&[], None)).await?;
+
+    let gateway = ReqwestGithubApi::for_base_url(&server.uri())?;
+    let envelope_json = envelope(Uuid::now_v7(), "tester", Some("full"));
+
+    let consumed = handle_sync_command(
+        &database.database,
+        &gateway,
+        &RateLimitLedger::new(),
+        &TokenRef::from_label("commands-list-e2e"),
+        &envelope_json,
+    )
+    .await?;
+    let ConsumedSyncCommand::Handled(handled) = consumed else {
+        return Err(format!("a fresh command must be handled, got {consumed:?}").into());
+    };
+
+    assert!(
+        matches!(handled.full, Some(FullSnapshotOutcome::Completed { .. })),
+        "the commanded full star snapshot must complete"
+    );
+    assert!(
+        matches!(
+            handled.star_lists,
+            Some(StarListSnapshotOutcome::Completed { .. })
+        ),
+        "the chained list snapshot must complete too, got {:?}",
+        handled.star_lists
+    );
+
+    // Two peer runs recorded for the same account: the star mode and the
+    // independent list mode.
+    let modes: Vec<(String, String)> = sqlx::query_as(
+        "select mode, status from github_catalog.sync_runs where account_id = $1 order by mode",
+    )
+    .bind(account_id)
+    .fetch_all(database.database.pool())
+    .await?
+    .into_iter()
+    .collect();
+    assert_eq!(
+        modes,
+        vec![
+            ("full".to_owned(), "completed".to_owned()),
+            ("star_lists".to_owned(), "completed".to_owned()),
+        ],
+        "one command yields one star-mode run and one independent star_lists run"
+    );
+
+    database.cleanup().await?;
+    Ok(())
+}
+
+#[tokio::test]
+async fn list_failure_never_invalidates_star_outcome() -> Result<(), Box<dyn std::error::Error>> {
+    let database = TestDatabase::create().await?;
+    seed_account(&database.database, "tester").await?;
+    let server = MockServer::start().await;
+
+    // The star listing works; every GraphQL call fails.
+    mount_unordered_page(
+        &server,
+        1,
+        format!(
+            "[{}]",
+            starred_item(300_000_086, "acme/star-wins", "2026-06-21T00:00:00Z")
+        ),
+    )
+    .await?;
+    mount_unordered_page(&server, 2, "[]".to_owned()).await?;
+    Mock::given(method("POST"))
+        .and(path("/graphql"))
+        .respond_with(ResponseTemplate::new(500))
+        .up_to_n_times(4)
+        .mount(&server)
+        .await;
+
+    let gateway = ReqwestGithubApi::for_base_url(&server.uri())?;
+    let envelope_json = envelope(Uuid::now_v7(), "tester", Some("full"));
+
+    let consumed = handle_sync_command(
+        &database.database,
+        &gateway,
+        &RateLimitLedger::new(),
+        &TokenRef::from_label("commands-independence-e2e"),
+        &envelope_json,
+    )
+    .await?;
+    let ConsumedSyncCommand::Handled(handled) = consumed else {
+        return Err(format!("a fresh command must be handled, got {consumed:?}").into());
+    };
+
+    assert!(
+        matches!(handled.full, Some(FullSnapshotOutcome::Completed { .. })),
+        "the star outcome must survive the list failure untouched"
+    );
+    assert!(
+        matches!(
+            handled.star_lists,
+            Some(StarListSnapshotOutcome::Failed { .. })
+        ),
+        "the failed list snapshot is reported truthfully, got {:?}",
+        handled.star_lists
+    );
+
+    // The star run's authority is exactly as it wrote it.
+    let starred_rows: i64 =
+        sqlx::query_scalar("select count(*) from github_catalog.current_star_state where starred")
+            .fetch_one(database.database.pool())
+            .await?;
+    assert_eq!(
+        starred_rows, 1,
+        "the successful star snapshot's authority stands despite the list failure"
+    );
+    // The command is still consumed exactly once.
+    let inbox_count: i64 = sqlx::query_scalar("select count(*) from github_catalog.inbox_events")
+        .fetch_one(database.database.pool())
+        .await?;
+    assert_eq!(inbox_count, 1);
+
+    database.cleanup().await?;
+    Ok(())
+}
+
 #[tokio::test]
 async fn valid_envelope_dispatches_incremental_scan_and_records_inbox()
 -> Result<(), Box<dyn std::error::Error>> {
@@ -162,6 +383,7 @@ async fn valid_envelope_dispatches_incremental_scan_and_records_inbox()
     )
     .await?;
     mount_newest_first_page(&server, 2, "[]".to_owned()).await?;
+    mount_empty_graphql(&server).await?;
 
     let gateway = ReqwestGithubApi::for_base_url(&server.uri())?;
     let envelope_json = envelope(Uuid::now_v7(), "tester", None);
@@ -210,14 +432,19 @@ async fn valid_envelope_dispatches_incremental_scan_and_records_inbox()
         "a handled command carries its consumption time"
     );
 
-    // Exactly one incremental run came out of the delivery.
+    // The delivery produced the incremental run plus its independent
+    // star-list snapshot, both completed.
     let run_modes: Vec<String> =
         sqlx::query_scalar("select mode from github_catalog.sync_runs order by mode")
             .fetch_all(database.database.pool())
             .await?
             .into_iter()
             .collect();
-    assert_eq!(run_modes, ["incremental"]);
+    assert_eq!(
+        run_modes,
+        ["incremental", "star_lists"],
+        "one command yields the requested scan and the independent list refresh"
+    );
 
     database.cleanup().await?;
     Ok(())
@@ -241,6 +468,7 @@ async fn duplicate_command_redelivery_performs_no_second_effect()
     )
     .await?;
     mount_newest_first_page(&server, 2, "[]".to_owned()).await?;
+    mount_empty_graphql(&server).await?;
 
     let gateway = ReqwestGithubApi::for_base_url(&server.uri())?;
     let command_id = Uuid::now_v7();
@@ -274,10 +502,22 @@ async fn duplicate_command_redelivery_performs_no_second_effect()
         "the redelivered identity must short-circuit"
     );
 
-    let run_count: i64 = sqlx::query_scalar("select count(*) from github_catalog.sync_runs")
+    let star_run_count: i64 = sqlx::query_scalar(
+        "select count(*) from github_catalog.sync_runs where mode in ('incremental', 'full')",
+    )
+    .fetch_one(database.database.pool())
+    .await?;
+    assert_eq!(
+        star_run_count, 1,
+        "redelivery must not open a second star run"
+    );
+    let total_run_count: i64 = sqlx::query_scalar("select count(*) from github_catalog.sync_runs")
         .fetch_one(database.database.pool())
         .await?;
-    assert_eq!(run_count, 1, "redelivery must not open a second run");
+    assert_eq!(
+        total_run_count, 2,
+        "the first delivery opened exactly the star run and its independent list run"
+    );
 
     let inbox_count: i64 = sqlx::query_scalar("select count(*) from github_catalog.inbox_events")
         .fetch_one(database.database.pool())
@@ -511,6 +751,7 @@ async fn gap_during_commanded_incremental_chains_full_rescan()
     )
     .await?;
     mount_unordered_page(&server, 2, "[]".to_owned()).await?;
+    mount_empty_graphql(&server).await?;
 
     let gateway = ReqwestGithubApi::for_base_url(&server.uri())?;
     let envelope_json = envelope(Uuid::now_v7(), "tester", None);
@@ -541,27 +782,39 @@ async fn gap_during_commanded_incremental_chains_full_rescan()
         "the gap must chain into a completed full rescan, got {:?}",
         handled.full
     );
+    assert!(
+        matches!(
+            handled.star_lists,
+            Some(ratatoskr_github_catalog::StarListSnapshotOutcome::Completed { .. })
+        ),
+        "the chained list snapshot still completes independently, got {:?}",
+        handled.star_lists
+    );
 
-    // Two runs tell the story: the failed incremental pass and the
-    // completing full rescan.
-    let run_rows: Vec<(String, Option<String>)> = sqlx::query_as(
-        "select status, failure_reason from github_catalog.sync_runs order by started_at",
+    // Three runs tell the story: the failed incremental pass, the completing
+    // full rescan, and the independent list refresh - in deterministic order.
+    let run_rows: Vec<(String, String, Option<String>)> = sqlx::query_as(
+        "select mode, status, failure_reason from github_catalog.sync_runs order by mode",
     )
     .fetch_all(database.database.pool())
     .await?
     .into_iter()
     .collect();
-    assert_eq!(run_rows.len(), 2, "the gap chains into exactly one rescan");
-    assert_eq!(run_rows[0].0, "failed");
+    assert_eq!(run_rows.len(), 3, "the gap chains into exactly one rescan");
+    assert_eq!(run_rows[0].0, "full");
+    assert_eq!(run_rows[0].1, "completed");
+    assert_eq!(run_rows[1].0, "incremental");
+    assert_eq!(run_rows[1].1, "failed");
     assert!(
-        run_rows[0]
-            .1
+        run_rows[1]
+            .2
             .as_deref()
             .is_some_and(|reason| reason.starts_with("starred_at ordering gap detected")),
         "the failed pass names its gap, got {:?}",
-        run_rows[0].1
+        run_rows[1].2
     );
-    assert_eq!(run_rows[1].0, "completed");
+    assert_eq!(run_rows[2].0, "star_lists");
+    assert_eq!(run_rows[2].1, "completed");
 
     // Authority afterwards reflects the full snapshot's enumeration.
     let provider_ids: Vec<i64> =
