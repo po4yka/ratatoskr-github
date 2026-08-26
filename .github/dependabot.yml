@@ -1,13 +1,11 @@
-# Only the github-actions ecosystem, because it is the only ecosystem this repository has. Action pins
-# rot silently: a pin whose `# vX.Y.Z` comment no longer matches its SHA cannot be checked by reading
-# the diff, and there are now two actions pinned here across two workflows. Dependabot moves the SHA
-# and the comment together, which is exactly the class of mistake that broke this fleet's first
-# contracts run.
+# Only the github-actions ecosystem. `cargo` is deliberately absent: this repository commits its
+# Cargo.lock and runs every command with `--locked`, which makes a dependency bump a deliberate act
+# rather than a chore, and `cargo deny check` in the gate already reports an advisory the moment it is
+# published. A monthly pull request rewriting the lockfile would be reviewing our own noise.
 #
-# A language ecosystem is deliberately absent rather than merely not needed yet. The first code that
-# lands here arrives with its own gate (`ci.yml`) and its own lockfile policy, and that commit is the
-# right place to decide whether a monthly dependency pull request is signal or noise — not this file,
-# written before there is anything to update.
+# Action pins are the opposite case: they rot silently, and a pin whose `# vX.Y.Z` comment no longer
+# matches its SHA cannot be checked by reading the diff. Dependabot updates the SHA and the comment
+# together, which is exactly the class of mistake that broke this workflow's first run.
 version: 2
 updates:
   - package-ecosystem: github-actions
