@@ -366,6 +366,17 @@ async fn record_ingest(
     .execute(&mut *transaction)
     .await
     .map_err(PersistenceError::Query)?;
+    // First star evidence over an unclassified entry promotes it to auto;
+    // explicit tracked and ignored decisions are never overridden.
+    sqlx::query(
+        "update github_catalog.repositories
+         set mode = 'auto', updated_at = now()
+         where repository_id = $1 and mode is null",
+    )
+    .bind(repository_id)
+    .execute(&mut *transaction)
+    .await
+    .map_err(PersistenceError::Query)?;
     transaction.commit().await.map_err(PersistenceError::Query)
 }
 

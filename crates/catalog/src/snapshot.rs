@@ -458,6 +458,22 @@ async fn promote_seen_repositories(
     .execute(&mut **transaction)
     .await
     .map_err(crate::database::PersistenceError::Query)?;
+
+    // Star evidence promotes only unclassified entries to auto; explicit
+    // tracked and ignored decisions are never overridden by synchronization.
+    sqlx::query(
+        "update github_catalog.repositories r
+         set mode = 'auto', updated_at = now()
+         where r.mode is null
+           and exists (
+               select 1 from github_catalog.snapshot_items si
+               where si.sync_run_id = $1
+                 and r.provider_repository_id = si.provider_repository_id)",
+    )
+    .bind(run_id)
+    .execute(&mut **transaction)
+    .await
+    .map_err(crate::database::PersistenceError::Query)?;
     Ok(())
 }
 
@@ -508,6 +524,17 @@ async fn unstar_absent_repositories(
               on conflict do nothing",
         )
         .bind(run_id)
+        .bind(repository_id)
+        .execute(&mut **transaction)
+        .await
+        .map_err(crate::database::PersistenceError::Query)?;
+        // An evidenced unstar releases auto governance back to unclassified;
+        // explicit tracked intent survives the removal.
+        sqlx::query(
+            "update github_catalog.repositories
+             set mode = null, updated_at = now()
+             where repository_id = $1 and mode = 'auto'",
+        )
         .bind(repository_id)
         .execute(&mut **transaction)
         .await

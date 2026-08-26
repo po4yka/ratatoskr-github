@@ -362,3 +362,58 @@ async fn repeated_reconciliation_on_converged_state_writes_nothing()
     fixture.database.cleanup().await?;
     Ok(())
 }
+
+/// The completed authority swap honors explicit classifications: tracked and
+/// ignored entries survive untouched, and an evidenced unstar releases auto
+/// governance back to unclassified while tracked intent persists.
+#[tokio::test]
+async fn snapshot_authority_respects_tracked_and_ignored_and_releases_auto_on_evidenced_unstar()
+-> Result<(), Box<dyn std::error::Error>> {
+    let fixture = seed_drift_fixture().await?;
+    // drifted_out: auto (must be released when its star is evidenced away).
+    sqlx::query("update github_catalog.repositories set mode = 'auto' where repository_id = $1")
+        .bind(fixture.drifted_out)
+        .execute(fixture.database.database.pool())
+        .await?;
+    // steady: tracked (a star continuation must never promote or demote it).
+    sqlx::query("update github_catalog.repositories set mode = 'tracked' where repository_id = $1")
+        .bind(fixture.steady)
+        .execute(fixture.database.database.pool())
+        .await?;
+    // missed_return: ignored (its restored star evidence must not override).
+    sqlx::query("update github_catalog.repositories set mode = 'ignored' where repository_id = $1")
+        .bind(fixture.missed_return)
+        .execute(fixture.database.database.pool())
+        .await?;
+
+    let completed = run_full_snapshot(
+        &fixture.database.database,
+        &fixture.gateway,
+        &RateLimitLedger::new(),
+        &fixture.token,
+        fixture.account_id,
+    )
+    .await?;
+    let FullSnapshotOutcome::Completed { .. } = completed else {
+        return Err(format!("the snapshot must complete, got {completed:?}").into());
+    };
+
+    let modes: Vec<(i64, Option<String>)> = sqlx::query_as(
+        "select provider_repository_id, mode from github_catalog.repositories
+         order by provider_repository_id",
+    )
+    .fetch_all(fixture.database.database.pool())
+    .await?;
+    assert_eq!(
+        modes,
+        [
+            (300_000_070, None),
+            (300_000_071, Some("ignored".to_owned())),
+            (300_000_072, Some("tracked".to_owned())),
+        ],
+        "evidenced unstar releases auto; explicit classifications survive the swap"
+    );
+
+    fixture.database.cleanup().await?;
+    Ok(())
+}

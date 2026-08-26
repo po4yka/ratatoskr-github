@@ -13,6 +13,10 @@ create table if not exists github_catalog.github_accounts (
     account_id uuid primary key,
     owner_ref  text not null,
     status     text not null,
+    -- Granted provider scopes as observed at connect/refresh time; mutation
+    -- authorization checks capabilities against this set. Empty until the
+    -- credential flows populate it.
+    granted_scopes text[] not null default '{}',
     created_at timestamptz not null default now(),
     constraint github_accounts_owner_ref_check
         check (owner_ref ~ '^[a-z][a-z0-9-]{1,63}$'),
@@ -27,8 +31,15 @@ create table if not exists github_catalog.github_accounts (
 create table if not exists github_catalog.repositories (
     repository_id          uuid primary key,
     provider_repository_id bigint not null unique,
+    -- Whose decision governs this catalog entry: auto (star-driven), tracked
+    -- (explicitly kept without a star), ignored (deliberately excluded), or
+    -- unclassified (null: known but never classified). Synchronization may
+    -- promote only unclassified to auto; explicit modes are never overridden.
+    mode                   text,
     created_at             timestamptz not null default now(),
-    updated_at             timestamptz not null default now()
+    updated_at             timestamptz not null default now(),
+    constraint repositories_mode_check
+        check (mode in ('auto', 'tracked', 'ignored'))
 );
 
 create table if not exists github_catalog.repository_aliases (
@@ -271,6 +282,49 @@ create table if not exists github_catalog.backup_policies (
         'complete_archive'
     ))
 );
+
+-- Append-only audit of every repository-mode transition and provider mutation
+-- attempt: who requested it, through which calling source, what was targeted,
+-- how it ended. One successful outcome per idempotency key makes replays
+-- converge on the recorded truth; failed attempts leave the key free for a
+-- retry. Credential material never enters this trail.
+create table if not exists github_catalog.mutation_audit (
+    audit_id        uuid primary key,
+    idempotency_key text not null,
+    -- The acting account as the attempt claimed it. Deliberately free of a
+    -- foreign key: a refusal must stay auditable even when no such account
+    -- exists, and the trail records claims rather than vouching for them.
+    account_id      uuid not null,
+    repository_id   uuid not null references github_catalog.repositories (repository_id),
+    list_id         uuid references github_catalog.star_lists (list_id),
+    operation_kind  text not null,
+    principal       text not null,
+    source          text not null,
+    outcome         text not null,
+    detail          jsonb not null default '{}'::jsonb,
+    created_at      timestamptz not null default now(),
+    constraint mutation_audit_operation_kind_check check (operation_kind in (
+        'star',
+        'unstar',
+        'list_member_add',
+        'list_member_remove',
+        'mode_set'
+    )),
+    constraint mutation_audit_source_check check (source in ('telegram', 'web')),
+    constraint mutation_audit_outcome_check
+        check (outcome in ('applied', 'already_applied', 'rejected', 'failed')),
+    constraint mutation_audit_detail_is_object check (jsonb_typeof(detail) = 'object')
+);
+
+-- The replay contract: a retried operation with a consumed key must find the
+-- recorded successful outcome instead of executing twice. Failures do not
+-- occupy keys, so a retry after failure can complete.
+create unique index if not exists mutation_audit_one_success_per_key
+    on github_catalog.mutation_audit (idempotency_key)
+    where outcome in ('applied', 'already_applied');
+
+create index if not exists mutation_audit_key_lookup
+    on github_catalog.mutation_audit (idempotency_key);
 
 create table if not exists github_catalog.outbox_events (
     message_id   uuid primary key,

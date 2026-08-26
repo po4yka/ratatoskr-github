@@ -2,9 +2,18 @@
 
 use sqlx::Executor as _;
 use sqlx::postgres::{PgConnectOptions, PgPoolOptions};
+use std::time::Duration;
 use uuid::Uuid;
 
 use crate::{Database, PersistenceError};
+
+/// How patiently a test pool waits for a connection. Generous on purpose:
+/// heavily loaded hosts can stall even a local handshake past the default.
+#[expect(
+    clippy::duration_suboptimal_units,
+    reason = "duration minutes constructors are not stable at this MSRV"
+)]
+const POOL_ACQUIRE_TIMEOUT: Duration = Duration::from_secs(180);
 
 /// An isolated disposable catalog database.
 #[derive(Debug)]
@@ -25,6 +34,7 @@ impl TestDatabase {
         let admin_url = admin_url();
         let admin = PgPoolOptions::new()
             .max_connections(1)
+            .acquire_timeout(POOL_ACQUIRE_TIMEOUT)
             .connect(&admin_url)
             .await
             .map_err(PersistenceError::Connect)?;
@@ -40,6 +50,7 @@ impl TestDatabase {
             .database(&name);
         let pool = PgPoolOptions::new()
             .max_connections(2)
+            .acquire_timeout(POOL_ACQUIRE_TIMEOUT)
             .connect_with(options)
             .await
             .map_err(PersistenceError::Connect)?;
@@ -57,6 +68,7 @@ impl TestDatabase {
         self.database.close().await;
         let admin = PgPoolOptions::new()
             .max_connections(1)
+            .acquire_timeout(POOL_ACQUIRE_TIMEOUT)
             .connect(&admin_url())
             .await
             .map_err(PersistenceError::Connect)?;

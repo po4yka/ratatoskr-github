@@ -13,9 +13,14 @@ mod config;
 mod database;
 mod identity;
 mod incremental;
+mod list_mutations;
 mod metadata;
+mod modes;
+mod mutation_trail;
+mod mutations;
 mod observe;
 pub mod provider;
+mod provider_mutations;
 pub mod rate_limit;
 mod snapshot;
 mod star_lists;
@@ -36,6 +41,11 @@ pub use identity::{
 };
 pub use incremental::{IncrementalScanError, IncrementalScanOutcome, run_incremental_scan};
 pub use metadata::{AppliedOutcome, REVISION_HISTORY_LIMIT, apply_fresh_body, apply_not_modified};
+pub use modes::{RequestedMode, SetModeRequest, set_repository_mode};
+pub use mutations::{
+    MutationContext, MutationError, MutationOutcome, MutationRequest, MutationSource,
+    MutationStatus, RefusalReason, RepositoryRef, execute_batch, execute_mutation,
+};
 pub use observe::{ObserveError, ObserveOutcome, observe_repository};
 pub use snapshot::{FullSnapshotOutcome, SnapshotError, run_full_snapshot};
 pub use star_lists::{

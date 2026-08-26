@@ -81,6 +81,7 @@ async fn owned_schema_applies_twice_without_cross_schema_objects()
             "github_accounts",
             "inbox_events",
             "list_snapshot_items",
+            "mutation_audit",
             "outbox_events",
             "reconciliation_repairs",
             "repositories",
@@ -211,6 +212,199 @@ async fn placeholder_tables_carry_the_decided_identity_rules()
         conflicting_live_alias.is_err(),
         "a live owner/name alias must have exactly one holding repository"
     );
+
+    database.cleanup().await?;
+    Ok(())
+}
+
+async fn assert_granted_scopes_default_empty(
+    database: &TestDatabase,
+    account_id: Uuid,
+) -> Result<(), Box<dyn std::error::Error>> {
+    sqlx::query(
+        "insert into github_catalog.github_accounts (account_id, owner_ref, status)
+         values ($1, 'mutator', 'connected')",
+    )
+    .bind(account_id)
+    .execute(database.database.pool())
+    .await?;
+    let granted_scopes: Vec<String> = sqlx::query_scalar(
+        "select granted_scopes from github_catalog.github_accounts where account_id = $1",
+    )
+    .bind(account_id)
+    .fetch_one(database.database.pool())
+    .await?;
+    assert!(
+        granted_scopes.is_empty(),
+        "an account starts with no granted scopes"
+    );
+    Ok(())
+}
+
+async fn assert_repository_mode_vocabulary(
+    database: &TestDatabase,
+    repository_id: Uuid,
+) -> Result<(), Box<dyn std::error::Error>> {
+    // Unclassified is the absence of a mode; the vocabulary holds three names.
+    let tracked = sqlx::query(
+        "update github_catalog.repositories set mode = 'tracked'
+         where repository_id = $1",
+    )
+    .bind(repository_id)
+    .execute(database.database.pool())
+    .await?;
+    assert_eq!(tracked.rows_affected(), 1);
+    let unknown_mode = sqlx::query(
+        "update github_catalog.repositories set mode = 'pinned'
+         where repository_id = $1",
+    )
+    .bind(repository_id)
+    .execute(database.database.pool())
+    .await;
+    assert!(
+        unknown_mode.is_err(),
+        "repository modes admit only auto, tracked, and ignored"
+    );
+    Ok(())
+}
+
+async fn assert_mutation_audit_constraints(
+    database: &TestDatabase,
+    account_id: Uuid,
+    repository_id: Uuid,
+) -> Result<(), Box<dyn std::error::Error>> {
+    // Every accepted audit row carries who, what, when, and how it ended.
+    let audit_row = |operation_kind: &'static str, outcome: &'static str| {
+        sqlx::query(
+            "insert into github_catalog.mutation_audit
+                 (audit_id, idempotency_key, account_id, repository_id,
+                  operation_kind, principal, source, outcome)
+             values ($1, $2, $3, $4, $5, 'telegram:42', 'telegram', $6)",
+        )
+        .bind(uuid::Uuid::now_v7())
+        .bind(format!("{operation_kind}:{outcome}"))
+        .bind(account_id)
+        .bind(repository_id)
+        .bind(operation_kind)
+        .bind(outcome)
+        .execute(database.database.pool())
+    };
+    assert_eq!(
+        audit_row("star", "applied").await?.rows_affected(),
+        1,
+        "a well-formed mutation audit row is accepted"
+    );
+    assert!(
+        audit_row("delete_repository", "applied").await.is_err(),
+        "audit rows name a known operation kind"
+    );
+    assert!(
+        audit_row("star", "pending_review").await.is_err(),
+        "audit rows name a known outcome"
+    );
+    let bad_source = sqlx::query(
+        "insert into github_catalog.mutation_audit
+             (audit_id, idempotency_key, account_id, repository_id,
+              operation_kind, principal, source, outcome)
+         values ($1, $2, $3, $4, 'star', 'web:7', 'cli', 'applied')",
+    )
+    .bind(uuid::Uuid::now_v7())
+    .bind("bad-source")
+    .bind(account_id)
+    .bind(repository_id)
+    .execute(database.database.pool())
+    .await;
+    assert!(
+        bad_source.is_err(),
+        "audit rows name a known calling source"
+    );
+    Ok(())
+}
+
+async fn assert_successful_idempotency_keys_are_unique(
+    database: &TestDatabase,
+    account_id: Uuid,
+    repository_id: Uuid,
+) -> Result<(), Box<dyn std::error::Error>> {
+    // Only successful outcomes claim the idempotency key: a replayed success
+    // collides, while a failure leaves the key free for a later retry.
+    let replayed_key = sqlx::query(
+        "insert into github_catalog.mutation_audit
+             (audit_id, idempotency_key, account_id, repository_id,
+              operation_kind, principal, source, outcome)
+         values ($1, 'replayed-key', $2, $3, 'star', 'web:7', 'web', 'already_applied')",
+    )
+    .bind(uuid::Uuid::now_v7())
+    .bind(account_id)
+    .bind(repository_id)
+    .execute(database.database.pool())
+    .await?;
+    assert_eq!(replayed_key.rows_affected(), 1);
+    let duplicate_success_key = sqlx::query(
+        "insert into github_catalog.mutation_audit
+             (audit_id, idempotency_key, account_id, repository_id,
+              operation_kind, principal, source, outcome)
+         values ($1, 'replayed-key', $2, $3, 'star', 'web:7', 'web', 'applied')",
+    )
+    .bind(uuid::Uuid::now_v7())
+    .bind(account_id)
+    .bind(repository_id)
+    .execute(database.database.pool())
+    .await;
+    assert!(
+        duplicate_success_key.is_err(),
+        "one successful audit record per idempotency key"
+    );
+    let failed_then_applied = async {
+        let failed = sqlx::query(
+            "insert into github_catalog.mutation_audit
+                 (audit_id, idempotency_key, account_id, repository_id,
+                  operation_kind, principal, source, outcome)
+             values ($1, 'recovered-key', $2, $3, 'star', 'web:7', 'web', 'failed')",
+        )
+        .bind(uuid::Uuid::now_v7())
+        .bind(account_id)
+        .bind(repository_id)
+        .execute(database.database.pool())
+        .await?;
+        let applied = sqlx::query(
+            "insert into github_catalog.mutation_audit
+                 (audit_id, idempotency_key, account_id, repository_id,
+                  operation_kind, principal, source, outcome)
+             values ($1, 'recovered-key', $2, $3, 'star', 'web:7', 'web', 'applied')",
+        )
+        .bind(uuid::Uuid::now_v7())
+        .bind(account_id)
+        .bind(repository_id)
+        .execute(database.database.pool())
+        .await?;
+        Ok::<_, sqlx::Error>((failed.rows_affected(), applied.rows_affected()))
+    }
+    .await;
+    assert!(
+        matches!(failed_then_applied, Ok((1, 1))),
+        "a failed attempt does not consume the idempotency key"
+    );
+    Ok(())
+}
+
+/// Mode vocabulary and mutation-audit rules decided for item 7 live in the
+/// schema itself: the mode vocabulary cannot drift, every attempt shares one
+/// append-only audit trail, and only successful outcomes own an idempotency
+/// key so failed attempts never consume theirs.
+#[tokio::test]
+async fn mutation_audit_and_mode_columns_carry_the_decided_rules()
+-> Result<(), Box<dyn std::error::Error>> {
+    let database = TestDatabase::create().await?;
+    let account_id = Uuid::now_v7();
+    assert_granted_scopes_default_empty(&database, account_id).await?;
+
+    let identity =
+        ratatoskr_github_catalog::upsert_repository(&database.database, 990_301_i64).await?;
+    assert_repository_mode_vocabulary(&database, identity.repository_id).await?;
+    assert_mutation_audit_constraints(&database, account_id, identity.repository_id).await?;
+    assert_successful_idempotency_keys_are_unique(&database, account_id, identity.repository_id)
+        .await?;
 
     database.cleanup().await?;
     Ok(())

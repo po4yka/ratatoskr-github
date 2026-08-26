@@ -135,7 +135,7 @@ pub async fn upsert_repository(
     Ok(RepositoryIdentity { repository_id })
 }
 
-async fn upsert_repository_in_tx(
+pub(crate) async fn upsert_repository_in_tx(
     transaction: &mut sqlx::Transaction<'_, sqlx::Postgres>,
     provider_repository_id: i64,
 ) -> Result<Uuid, PersistenceError> {

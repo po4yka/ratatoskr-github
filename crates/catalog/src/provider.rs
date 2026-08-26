@@ -267,7 +267,7 @@ pub trait GithubApi {
 
 /// Reads rate-limit headers off a response, tolerating absent values.
 #[must_use]
-fn rate_headers_from(headers: &reqwest::header::HeaderMap) -> RateLimitHeaders {
+pub(crate) fn rate_headers_from(headers: &reqwest::header::HeaderMap) -> RateLimitHeaders {
     let parse_i64 = |name: &str| {
         headers
             .get(name)
@@ -288,7 +288,7 @@ fn rate_headers_from(headers: &reqwest::header::HeaderMap) -> RateLimitHeaders {
 /// Maps one GraphQL reply's accounting onto the shared ledger shape:
 /// response headers win when present, and otherwise the in-body
 /// `rateLimit` object supplies remaining and reset.
-fn graphql_rate_limit(
+pub(crate) fn graphql_rate_limit(
     header_rate: RateLimitHeaders,
     body_rate: Option<&GraphqlRateLimit>,
 ) -> RateLimitHeaders {
@@ -309,7 +309,8 @@ fn graphql_rate_limit(
 }
 
 /// Parses an RFC 3339 timestamp into whole epoch seconds.
-fn rfc3339_epoch(value: &str) -> Option<i64> {
+#[must_use]
+pub(crate) fn rfc3339_epoch(value: &str) -> Option<i64> {
     time::OffsetDateTime::parse(value, &time::format_description::well_known::Rfc3339)
         .ok()
         .map(time::OffsetDateTime::unix_timestamp)
@@ -425,10 +426,10 @@ struct RepositoryNode {
 
 /// The in-body rate-limit accounting of a GraphQL reply.
 #[derive(Debug, Deserialize)]
-struct GraphqlRateLimit {
-    remaining: Option<i64>,
+pub(crate) struct GraphqlRateLimit {
+    pub(crate) remaining: Option<i64>,
     #[serde(rename = "resetAt")]
-    reset_at: Option<String>,
+    pub(crate) reset_at: Option<String>,
 }
 
 impl ReqwestGithubApi {
@@ -447,6 +448,27 @@ impl ReqwestGithubApi {
             http,
             base_url: base_url.trim_end_matches('/').to_owned(),
         })
+    }
+
+    /// Posts one GraphQL document and returns the raw response; mutation
+    /// operations classify status families themselves.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ProviderError::Transport`] when the request cannot be sent.
+    pub(crate) async fn post_graphql_body(
+        &self,
+        token: Option<&str>,
+        body: &serde_json::Value,
+    ) -> Result<reqwest::Response, ProviderError> {
+        let mut request = self
+            .http
+            .post(format!("{}/graphql", self.base_url))
+            .json(body);
+        if let Some(token) = token {
+            request = request.bearer_auth(token);
+        }
+        request.send().await.map_err(ProviderError::Transport)
     }
 }
 
