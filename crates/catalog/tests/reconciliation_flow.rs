@@ -98,7 +98,6 @@ async fn mount_listing(
                 .insert_header("x-ratelimit-remaining", "4999")
                 .insert_header("x-ratelimit-reset", "1787000000"),
         )
-        .up_to_n_times(2)
         .mount(server)
         .await;
     Ok(())
@@ -110,7 +109,6 @@ async fn mount_exhaustion(server: &MockServer) -> Result<(), Box<dyn std::error:
         .and(query_param("page", "2"))
         .and(header("accept", "application/vnd.github.star+json"))
         .respond_with(ResponseTemplate::new(200).set_body_string("[]"))
-        .up_to_n_times(2)
         .mount(server)
         .await;
     Ok(())

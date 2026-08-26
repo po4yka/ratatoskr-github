@@ -77,6 +77,9 @@ async fn owned_schema_applies_twice_without_cross_schema_objects()
         tables,
         [
             "backup_policies",
+            "backup_policy_feedback",
+            "backup_policy_publication_cursor",
+            "backup_policy_publications",
             "current_star_state",
             "github_accounts",
             "inbox_events",

@@ -2,7 +2,7 @@
 
 `ratatoskr-github` is the GitHub Catalog bounded context for Ratatoskr. It records what repositories a user has starred or chosen to track, preserves GitHub metadata and list membership, coordinates repository analysis, and publishes the desired backup state consumed by Git Vault.
 
-> **Status:** implementation plan items 1 and 3 through 7 are complete: a Rust service runs locally with typed strict configuration, structured telemetry, operator health routes (`/live`, `/ready`, `/metrics`, `/version`), the first-version `github_catalog` schema applied at startup, stable repository identity keyed by GitHub's numeric ID, mutable aliases with redirect history across renames and transfers, metadata projection refreshed through conditional requests (ETag/304), per-token rate-limit accounting shared across operations, bounded metadata revision history, full star snapshots that enumerate the whole starred listing under rate budgets, resume from durable checkpoints, swap star authority atomically in one transaction, record unstars as evidenced observations, watermark-governed incremental scans that never infer removals and force a full rescan on any ordering gap, recorded idempotent drift repairs inside the reconciliation swap, consumption of the platform scheduler's `github.sync.requested.v1` commands through a durable idempotent inbox, native star-list snapshots enumerated over GraphQL under cursor checkpoints that swap list authority atomically, record membership diffs as evidenced observations, tombstone vanished lists, refuse truncated enumerations, and - as of item 7 - repository modes (`auto`, `tracked`, `ignored`, unclassified) with validated audited transitions, plus explicit consent-carrying mutations: idempotent star/unstar and star-list membership writes executed under an authorization context supplied by the calling product flow, scope-checked before any provider contact, replay-safe by idempotency key with exactly one successful audit entry each, and reported truthfully per operation including partial success across batches. Account credentials, public APIs, and event handlers described below are planned and are not implemented yet.
+> **Status:** implementation plan items 1 and 3 through 8 are complete: a Rust service runs locally with typed strict configuration, structured telemetry, operator health routes (`/live`, `/ready`, `/metrics`, `/version`), stable repository identity and star/list synchronization, audited repository modes and idempotent provider mutations, and a durable desired-backup-policy publication cursor. Catalog derives a complete `DesiredBackupPolicy` v1 with stable repository references, cadence/priority/size hints and exclusions, publishes only changed versions through `cmd.vault.target.desired.v1`, and records `evt.vault.backup_policy.acknowledged.v1` idempotently for operator visibility. Account credentials, public APIs, and live fleet-bus handlers remain planned.
 
 > [!IMPORTANT]
 > **Ratatoskr is in development.** No database holds data that has to survive a schema change.
@@ -212,6 +212,8 @@ A later failure does not roll back an earlier successful external action. Respon
 
 GitHub Catalog stores desired state; Git Vault owns actual storage state.
 
+Catalog uses `ratatoskr-backup-contracts` at immutable commit `0d6ddfb475fd47a153a03a69222a5a27cc48e067`. A durable trailing debounce coalesces mode/star-governance changes, then atomically writes an immutable policy version and `cmd.vault.target.desired.v1` outbox row. Vault feedback arrives as `evt.vault.backup_policy.acknowledged.v1`; accepted means only that Vault accepted the requested policy version, not that a mirror, retention action, or restore succeeded.
+
 Planned policy levels:
 
 ```text
@@ -233,10 +235,10 @@ include_issues
 offsite_required
 ```
 
-Policy changes publish events such as:
+Policy changes publish commands such as:
 
 ```text
-vault.target.desired.v1
+cmd.vault.target.desired.v1
 ```
 
 Catalog never inspects Vault's filesystem or writes its database. Vault reports convergence and verification through contracts.

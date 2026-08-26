@@ -273,6 +273,10 @@ create table if not exists github_catalog.backup_policies (
     repository_id    uuid not null unique references github_catalog.repositories (repository_id),
     policy_level     text not null,
     pinned           boolean not null default false,
+    mirror_cadence   text not null default 'daily' check (mirror_cadence in ('eager', 'daily', 'weekly')),
+    priority_hint    text not null default 'standard' check (priority_hint in ('critical', 'standard', 'bulk')),
+    size_hint_bytes  bigint check (size_hint_bytes is null or size_hint_bytes > 0),
+    exclusions       jsonb not null default '[]'::jsonb check (jsonb_typeof(exclusions) = 'array'),
     updated_at       timestamptz not null default now(),
     constraint backup_policies_level_check check (policy_level in (
         'none',
@@ -281,6 +285,32 @@ create table if not exists github_catalog.backup_policies (
         'git_mirror_with_lfs',
         'complete_archive'
     ))
+);
+
+-- One cursor serializes whole-catalog desired-policy versions and keeps the trailing debounce
+-- durable across restart. Policy bodies are immutable audit evidence, never actual backup state.
+create table if not exists github_catalog.backup_policy_publication_cursor (
+    scope text primary key check (scope = 'catalog'),
+    dirty_generation bigint not null default 0,
+    published_generation bigint not null default 0,
+    not_before timestamptz,
+    last_policy_version bigint not null default 0,
+    last_fingerprint text,
+    constraint backup_policy_cursor_generations check (published_generation <= dirty_generation)
+);
+create table if not exists github_catalog.backup_policy_publications (
+    policy_version bigint primary key check (policy_version > 0),
+    fingerprint text not null unique,
+    document jsonb not null check (jsonb_typeof(document) = 'object'),
+    created_at timestamptz not null default now()
+);
+create table if not exists github_catalog.backup_policy_feedback (
+    message_id uuid primary key,
+    acknowledged_policy_version bigint not null check (acknowledged_policy_version > 0),
+    outcome text not null check (outcome in ('accepted', 'rejected')),
+    last_applied_policy_version bigint not null check (last_applied_policy_version >= 0),
+    reasons jsonb not null default '[]'::jsonb check (jsonb_typeof(reasons) = 'array'),
+    received_at timestamptz not null default now()
 );
 
 -- Append-only audit of every repository-mode transition and provider mutation
@@ -338,7 +368,7 @@ create table if not exists github_catalog.outbox_events (
         'github.star.observed.v1',
         'github.star.removed.v1',
         'github.backup_policy.changed.v1',
-        'vault.target.desired.v1',
+        'cmd.vault.target.desired.v1',
         'knowledge.repository_analysis.requested.v1'
     )),
     constraint outbox_payload_is_object check (jsonb_typeof(payload) = 'object')
@@ -356,7 +386,7 @@ create table if not exists github_catalog.inbox_events (
         'github.star.observed.v1',
         'github.star.removed.v1',
         'github.backup_policy.changed.v1',
-        'vault.target.desired.v1',
+        'evt.vault.backup_policy.acknowledged.v1',
         'knowledge.repository_analysis.requested.v1'
     )),
     constraint inbox_payload_is_object check (jsonb_typeof(payload) = 'object')

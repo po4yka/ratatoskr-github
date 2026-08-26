@@ -552,6 +552,11 @@ async fn execute_star_write<G: MutationApi>(
         direction,
     )
     .await?;
+    if newly_applied {
+        crate::backup_policy::mark_backup_policy_dirty_in_tx(&mut transaction)
+            .await
+            .map_err(MutationError::from)?;
+    }
 
     let outcome_label = if newly_applied {
         AuditOutcome::Applied

@@ -48,6 +48,9 @@ tracing-subscriber = { version = "=0.3.23", default-features = false, features =
 ] }
 uuid = { version = "=1.24.1", features = ["v7"] }
 wiremock = "=0.6.5"
+ratatoskr-backup-contracts = { git = "https://github.com/po4yka/ratatoskr-contracts.git", rev = "0d6ddfb475fd47a153a03a69222a5a27cc48e067" }
+ratatoskr-identifiers = { git = "https://github.com/po4yka/ratatoskr-contracts.git", rev = "0d6ddfb475fd47a153a03a69222a5a27cc48e067" }
+ratatoskr-event-envelope = { git = "https://github.com/po4yka/ratatoskr-contracts.git", rev = "0d6ddfb475fd47a153a03a69222a5a27cc48e067" }
 
 [workspace.lints.rust]
 unsafe_code = "forbid"

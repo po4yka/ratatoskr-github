@@ -8,6 +8,7 @@
 //! credentials, synchronization, and provider access arrive with later
 //! implementation plan items.
 
+mod backup_policy;
 mod commands;
 mod config;
 mod database;
@@ -29,6 +30,11 @@ mod telemetry;
 #[cfg(feature = "test-support")]
 pub mod test_support;
 
+pub use backup_policy::{
+    BackupPolicyError, BackupPolicyInput, FeedbackOutcome, POLICY_DEBOUNCE, PolicyFeedback,
+    PublicationOutcome, derive_backup_policy, latest_backup_policy_feedback,
+    mark_backup_policy_dirty, publish_due_backup_policy, record_backup_policy_acknowledgment,
+};
 pub use commands::{
     ConsumedSyncCommand, HandledSyncCommand, RequestedSyncMode, SYNC_REQUESTED_TYPE,
     SyncCommandError, handle_sync_command,

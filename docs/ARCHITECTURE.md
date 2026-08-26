@@ -390,10 +390,10 @@ offsite_required
 reason
 ```
 
-A policy revision produces an event such as:
+A policy revision produces a command such as:
 
 ```text
-vault.target.desired.v1
+cmd.vault.target.desired.v1
 ```
 
 Vault reconciles actual state and reports status through its own events. Catalog may expose a reference/projection but does not write Vault tables.
@@ -482,6 +482,7 @@ github.repository.unstar_requested.v1
 github.star_list.membership_change_requested.v1
 github.backup_policy.change_requested.v1
 github.watch.change_requested.v1
+cmd.vault.target.desired.v1
 ```
 
 ### 16.2. Events emitted
@@ -497,7 +498,6 @@ github.backup_policy.changed.v1
 github.repository.analysis_requested.v1
 github.sync.completed.v1
 github.sync.partial.v1
-vault.target.desired.v1
 ```
 
 Events use references and bounded metadata; credentials and full README bodies are excluded.

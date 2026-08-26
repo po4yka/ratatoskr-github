@@ -127,6 +127,9 @@ pub async fn set_repository_mode(
         .execute(&mut *transaction)
         .await
         .map_err(PersistenceError::Query)?;
+        crate::backup_policy::mark_backup_policy_dirty_in_tx(&mut transaction)
+            .await
+            .map_err(MutationError::from)?;
     }
 
     let inserted = insert_audit_row(
