@@ -16,8 +16,9 @@ async fn seed_account(
 ) -> Result<Uuid, Box<dyn std::error::Error>> {
     let account_id = Uuid::now_v7();
     sqlx::query(
-        "insert into github_catalog.github_accounts (account_id, owner_ref, status)
-         values ($1, 'tester', 'connected')",
+        "insert into github_catalog.github_accounts
+             (account_id, owner_ref, status, provider_user_id)
+         values ($1, 'tester', 'connected', 1)",
     )
     .bind(account_id)
     .execute(database.pool())
@@ -769,6 +770,68 @@ async fn mid_run_provider_failure_preserves_prior_authority_and_records_failure(
     .fetch_one(database.database.pool())
     .await?;
     assert_eq!(staging_left, 0, "failed-run staging must be cleared");
+
+    database.cleanup().await?;
+    Ok(())
+}
+
+#[tokio::test]
+async fn complete_provider_snapshot_resolves_an_imported_unknown_star_time()
+-> Result<(), Box<dyn std::error::Error>> {
+    let database = TestDatabase::create().await?;
+    let account_id = seed_account(&database.database).await?;
+    let repository =
+        ratatoskr_github_catalog::upsert_repository(&database.database, 300_000_777).await?;
+    sqlx::query(
+        "insert into github_catalog.current_star_state
+             (account_id, repository_id, starred, starred_at,
+              provider_starred_at_unknown, last_observed_at)
+         values ($1, $2, true, null, true, now())",
+    )
+    .bind(account_id)
+    .bind(repository.repository_id)
+    .execute(database.database.pool())
+    .await?;
+    let server = MockServer::start().await;
+    mount_page(
+        &server,
+        1,
+        format!(
+            "[{}]",
+            starred_item(300_000_777, "acme/imported", "2026-08-20T00:00:00Z")
+        ),
+    )
+    .await?;
+    mount_page(&server, 2, "[]".to_owned()).await?;
+
+    let gateway = ReqwestGithubApi::for_base_url(&server.uri())?;
+    let outcome = run_full_snapshot(
+        &database.database,
+        &gateway,
+        &RateLimitLedger::new(),
+        &TokenRef::from_label("imported-star-resolution"),
+        account_id,
+    )
+    .await?;
+    assert!(matches!(outcome, FullSnapshotOutcome::Completed { .. }));
+    let state: (bool, bool) = sqlx::query_as(
+        "select starred_at = '2026-08-20T00:00:00Z'::timestamptz,
+                provider_starred_at_unknown
+         from github_catalog.current_star_state
+         where account_id = $1 and repository_id = $2",
+    )
+    .bind(account_id)
+    .bind(repository.repository_id)
+    .fetch_one(database.database.pool())
+    .await?;
+    assert!(
+        state.0,
+        "provider timestamp must replace the import unknown"
+    );
+    assert!(
+        !state.1,
+        "provider evidence must resolve the import unknown"
+    );
 
     database.cleanup().await?;
     Ok(())

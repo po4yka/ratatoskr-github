@@ -11,9 +11,11 @@
 mod backup_policy;
 mod commands;
 mod config;
+mod credentials;
 mod database;
 mod identity;
 mod incremental;
+mod legacy;
 mod list_mutations;
 mod metadata;
 mod modes;
@@ -40,13 +42,25 @@ pub use commands::{
     ConsumedSyncCommand, HandledSyncCommand, RequestedSyncMode, SYNC_REQUESTED_TYPE,
     SyncCommandError, handle_sync_command,
 };
-pub use config::{AdminConfig, Config, ConfigError, Limits, StorageConfig};
+pub use config::{
+    AdminConfig, Config, ConfigError, CredentialsConfig, LegacyConfig, Limits, StorageConfig,
+};
+pub use credentials::{
+    CredentialError, CredentialKey, VerifiedGithubAccount, load_active_pat, register_pat,
+};
 pub use database::{Database, PersistenceError};
 pub use identity::{
     AliasKind, IdentityError, RepositoryIdentity, apply_alias_observation, record_alias,
     resolve_alias, upsert_repository,
 };
 pub use incremental::{IncrementalScanError, IncrementalScanOutcome, run_incremental_scan};
+pub use legacy::{
+    LegacyCutoverReadiness, LegacyImportError, LegacyImportOutcome, LegacyImportRequest,
+    LegacyIntegration, LegacyOwnerMap, LegacyOwnerMapError, LegacyRepository, LegacyShadowError,
+    LegacyShadowReport, LegacySnapshot, LegacySource, LegacySourceError,
+    generate_legacy_shadow_report, import_legacy_snapshot, legacy_cutover_readiness,
+    legacy_shadow_account_ids,
+};
 pub use metadata::{
     AppliedOutcome, REVISION_HISTORY_LIMIT, ReadmeBlobError, RepositoryAnalysisPublicationError,
     RepositoryAnalysisSource, apply_fresh_body, apply_fresh_source, apply_not_modified,

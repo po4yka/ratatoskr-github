@@ -23,6 +23,36 @@ fn serialization_omits_the_database_url() -> Result<(), serde_json::Error> {
 }
 
 #[test]
+fn credential_key_configuration_is_accepted_but_never_serialized_or_debugged()
+-> Result<(), Box<dyn std::error::Error>> {
+    let configured_key = "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff";
+    let config = Config::from_environment([
+        ("RATATOSKR__CREDENTIALS__ENCRYPTION_KEY_HEX", configured_key),
+        ("RATATOSKR__CREDENTIALS__KEY_VERSION", "key-2026-08"),
+    ])?;
+
+    let serialized = serde_json::to_string(&config)?;
+    let debug = format!("{config:?}");
+    assert!(!serialized.contains(configured_key));
+    assert!(!debug.contains("255"));
+    Ok(())
+}
+
+#[test]
+fn legacy_source_configuration_is_accepted_but_never_serialized_or_debugged()
+-> Result<(), Box<dyn std::error::Error>> {
+    let source_url = "postgres://legacy-reader:synthetic@127.0.0.1:5435/legacy";
+    let config =
+        Config::from_environment([("RATATOSKR__LEGACY__SOURCE_DATABASE_URL", source_url)])?;
+
+    let serialized = serde_json::to_string(&config)?;
+    let debug = format!("{config:?}");
+    assert!(!serialized.contains(source_url));
+    assert!(!debug.contains(source_url));
+    Ok(())
+}
+
+#[test]
 fn unknown_key_is_refused_without_echoing_value() {
     let result = Config::from_environment([("RATATOSKR__LIMITS__MYSTERY", "LEAKME")]);
 

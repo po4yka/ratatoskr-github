@@ -18,8 +18,10 @@ path = "src/main.rs"
 [dependencies]
 axum.workspace = true
 ratatoskr-github-catalog = { path = "../../crates/catalog" }
+secrecy.workspace = true
 thiserror.workspace = true
 tokio.workspace = true
+uuid.workspace = true
 
 [dev-dependencies]
 http-body-util.workspace = true

@@ -24,8 +24,9 @@ async fn seed_account(
     let account_id = Uuid::now_v7();
     let granted: Vec<String> = scopes.iter().map(|scope| (*scope).to_owned()).collect();
     sqlx::query(
-        "insert into github_catalog.github_accounts (account_id, owner_ref, status, granted_scopes)
-         values ($1, $2, 'connected', $3)",
+        "insert into github_catalog.github_accounts
+             (account_id, owner_ref, status, provider_user_id, granted_scopes)
+         values ($1, $2, 'connected', 1, $3)",
     )
     .bind(account_id)
     .bind(owner_ref)

@@ -13,15 +13,78 @@ create table if not exists github_catalog.github_accounts (
     account_id uuid primary key,
     owner_ref  text not null,
     status     text not null,
+    provider_user_id bigint,
+    provider_login text,
     -- Granted provider scopes as observed at connect/refresh time; mutation
     -- authorization checks capabilities against this set. Empty until the
     -- credential flows populate it.
     granted_scopes text[] not null default '{}',
     created_at timestamptz not null default now(),
     constraint github_accounts_owner_ref_check
-        check (owner_ref ~ '^[a-z][a-z0-9-]{1,63}$'),
+        check (owner_ref ~ '^(user:[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}|[a-z][a-z0-9-]{1,63})$'),
     constraint github_accounts_status_check
-        check (status in ('connected', 'reauthorization_required', 'revoked'))
+        check (status in ('connected', 'reauthorization_required', 'revoked')),
+    constraint github_accounts_connected_provider_identity_check
+        check ((status <> 'connected') or (provider_user_id is not null)),
+    constraint github_accounts_provider_user_id_check
+        check ((provider_user_id is null) or (provider_user_id > 0))
+);
+
+create unique index if not exists github_accounts_owner_provider_identity_key
+    on github_catalog.github_accounts (owner_ref, provider_user_id)
+    where provider_user_id is not null;
+
+-- Replacement credentials are exclusively owned by this service. The value is
+-- authenticated ciphertext, never legacy ciphertext or a plaintext token.
+create table if not exists github_catalog.github_account_credentials (
+    account_id      uuid primary key references github_catalog.github_accounts (account_id),
+    key_version     text not null,
+    encrypted_token bytea not null,
+    nonce           bytea not null,
+    created_at      timestamptz not null default now(),
+    updated_at      timestamptz not null default now(),
+    constraint github_account_credentials_key_version_check
+        check (key_version ~ '^[a-zA-Z0-9][a-zA-Z0-9._-]{0,63}$'),
+    constraint github_account_credentials_ciphertext_check
+        check (octet_length(encrypted_token) > 16),
+    constraint github_account_credentials_nonce_check
+        check (octet_length(nonce) = 12)
+);
+
+-- Retired-source evidence is catalog-owned and keyed by a non-secret source
+-- label. It neither references nor retains a legacy database connection.
+create table if not exists github_catalog.legacy_import_runs (
+    import_run_id uuid primary key,
+    source_id     text not null,
+    status        text not null,
+    accounts_imported integer not null default 0,
+    repositories_imported integer not null default 0,
+    star_claims_imported integer not null default 0,
+    list_claims_imported integer not null default 0,
+    failure_code text,
+    started_at    timestamptz not null default now(),
+    finished_at   timestamptz,
+    constraint legacy_import_runs_source_id_check
+        check (source_id ~ '^[a-z0-9][a-z0-9._-]{0,63}$'),
+    constraint legacy_import_runs_status_check
+        check (status in ('running', 'completed', 'failed')),
+    constraint legacy_import_runs_finish_check
+        check ((status = 'running') = (finished_at is null)),
+    constraint legacy_import_runs_failure_code_check
+        check (
+            (status = 'failed' and failure_code in ('conflicting_source_data', 'alias_conflict', 'persistence'))
+            or (status <> 'failed' and failure_code is null)
+        )
+);
+
+create table if not exists github_catalog.legacy_import_accounts (
+    source_id      text not null,
+    legacy_user_id bigint not null,
+    account_id     uuid not null references github_catalog.github_accounts (account_id),
+    primary key (source_id, legacy_user_id),
+    constraint legacy_import_accounts_source_id_check
+        check (source_id ~ '^[a-z0-9][a-z0-9._-]{0,63}$'),
+    constraint legacy_import_accounts_user_id_check check (legacy_user_id > 0)
 );
 
 -- GitHub's numeric repository ID is the stable upstream identity; owner/name and URLs are mutable
@@ -64,6 +127,18 @@ create unique index if not exists repository_aliases_live_identity_key
 
 create index if not exists repository_aliases_value_lookup
     on github_catalog.repository_aliases (alias_kind, alias_value);
+
+create table if not exists github_catalog.legacy_import_repository_records (
+    source_id            text not null,
+    legacy_repository_id bigint not null,
+    account_id           uuid not null references github_catalog.github_accounts (account_id),
+    repository_id        uuid not null references github_catalog.repositories (repository_id),
+    starred              boolean not null,
+    imported_at          timestamptz not null default now(),
+    primary key (source_id, legacy_repository_id),
+    constraint legacy_import_repository_records_source_id_check
+        check (source_id ~ '^[a-z0-9][a-z0-9._-]{0,63}$')
+);
 
 -- One current metadata projection per repository plus conditional-request state; raw observed
 -- bodies live in repository_metadata_revisions and are pruned to a bounded recent window.
@@ -199,9 +274,12 @@ create table if not exists github_catalog.star_observations (
     repository_id        uuid not null references github_catalog.repositories (repository_id),
     starred              boolean not null,
     provider_starred_at  timestamptz,
+    provider_starred_at_unknown boolean not null default false,
     observed_at          timestamptz not null,
+    -- An import preserves a true retired observation but cannot manufacture a
+    -- provider timestamp. A later complete provider snapshot supplies it.
     constraint star_observations_provider_time_is_evidence
-        check ((starred = false) or (provider_starred_at is not null))
+        check ((starred = false) or (provider_starred_at is not null) or provider_starred_at_unknown)
 );
 
 -- The exact upstream unstar time is unknown, so removal evidence uses observed_unstarred_at and
@@ -212,6 +290,7 @@ create table if not exists github_catalog.current_star_state (
     repository_id         uuid not null references github_catalog.repositories (repository_id),
     starred               boolean not null,
     starred_at            timestamptz,
+    provider_starred_at_unknown boolean not null default false,
     last_observed_at      timestamptz not null,
     observed_unstarred_at timestamptz,
     evidence_run_id       uuid references github_catalog.sync_runs (sync_run_id),
@@ -219,7 +298,38 @@ create table if not exists github_catalog.current_star_state (
     constraint current_star_state_removal_evidence_check
         check ((starred = true) or (observed_unstarred_at is not null)),
     constraint current_star_state_starred_at_presence_check
-        check ((starred = false) or (starred_at is not null))
+        check ((starred = false) or (starred_at is not null) or provider_starred_at_unknown)
+);
+
+-- Names from the retired schema are evidence only. Native `star_lists` keep
+-- their provider node identity and are populated only by a live snapshot.
+create table if not exists github_catalog.legacy_list_claims (
+    source_id            text not null,
+    legacy_repository_id bigint not null,
+    account_id           uuid not null references github_catalog.github_accounts (account_id),
+    repository_id        uuid not null references github_catalog.repositories (repository_id),
+    list_name            text not null,
+    observed_at          timestamptz not null,
+    primary key (source_id, legacy_repository_id, list_name),
+    constraint legacy_list_claims_source_id_check
+        check (source_id ~ '^[a-z0-9][a-z0-9._-]{0,63}$'),
+    constraint legacy_list_claims_name_check
+        check (length(list_name) between 1 and 256)
+);
+
+create table if not exists github_catalog.legacy_shadow_reports (
+    report_id            uuid primary key,
+    source_id            text not null,
+    report_digest        text not null,
+    report               jsonb not null,
+    cutover_reviewable   boolean not null,
+    created_at           timestamptz not null default now(),
+    constraint legacy_shadow_reports_source_id_check
+        check (source_id ~ '^[a-z0-9][a-z0-9._-]{0,63}$'),
+    constraint legacy_shadow_reports_digest_check
+        check (report_digest ~ '^[0-9a-f]{64}$'),
+    constraint legacy_shadow_reports_report_object_check
+        check (jsonb_typeof(report) = 'object')
 );
 
 -- Incremental scans ingest only what is newer than the account's high-water mark; the mark moves

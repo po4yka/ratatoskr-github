@@ -4,6 +4,8 @@
 //! membership observations, tombstoned lists, truncation refusal, and the
 //! read surface.
 
+use std::sync::atomic::{AtomicI64, Ordering};
+
 use ratatoskr_github_catalog::provider::ReqwestGithubApi;
 use ratatoskr_github_catalog::rate_limit::{RateLimitLedger, TokenRef};
 use ratatoskr_github_catalog::test_support::TestDatabase;
@@ -13,16 +15,21 @@ use uuid::Uuid;
 use wiremock::matchers::{body_string_contains, method, path};
 use wiremock::{Mock, MockServer, ResponseTemplate};
 
+static NEXT_PROVIDER_USER_ID: AtomicI64 = AtomicI64::new(1);
+
 /// Seeds one connected account row and returns its id.
 async fn seed_account(
     database: &ratatoskr_github_catalog::Database,
 ) -> Result<Uuid, Box<dyn std::error::Error>> {
     let account_id = Uuid::now_v7();
+    let provider_user_id = NEXT_PROVIDER_USER_ID.fetch_add(1, Ordering::Relaxed);
     sqlx::query(
-        "insert into github_catalog.github_accounts (account_id, owner_ref, status)
-         values ($1, 'tester', 'connected')",
+        "insert into github_catalog.github_accounts
+             (account_id, owner_ref, status, provider_user_id)
+         values ($1, 'tester', 'connected', $2)",
     )
     .bind(account_id)
+    .bind(provider_user_id)
     .execute(database.pool())
     .await?;
     Ok(account_id)

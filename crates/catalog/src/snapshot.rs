@@ -449,6 +449,7 @@ async fn promote_seen_repositories(
              starred_at = coalesce(
                  github_catalog.current_star_state.starred_at,
                  excluded.starred_at),
+             provider_starred_at_unknown = false,
              last_observed_at = now(),
              observed_unstarred_at = null,
              evidence_run_id = excluded.evidence_run_id",

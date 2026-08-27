@@ -1,10 +1,11 @@
 //! HTTP-level provider gateway behavior against a local mock server.
 
-use ratatoskr_github_catalog::provider::ReqwestGithubApi;
+use ratatoskr_github_catalog::provider::{AuthenticatedUser, ReqwestGithubApi};
 use ratatoskr_github_catalog::provider::{
     FetchOutcome, FreshReadme, FreshRepository, GithubApi, OwnerName, ProviderRepositoryBody,
     ReadmeFetchOutcome,
 };
+use secrecy::SecretString;
 use wiremock::matchers::{header, method, path, query_param};
 use wiremock::{Mock, MockServer, ResponseTemplate};
 
@@ -19,6 +20,59 @@ const FRESH_BODY: &str = r#"{
     "default_branch": "main",
     "pushed_at": "2026-08-01T10:00:00Z"
 }"#;
+
+#[tokio::test]
+async fn authenticated_user_verifies_replacement_pat_and_observed_scopes()
+-> Result<(), Box<dyn std::error::Error>> {
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/user"))
+        .and(header("authorization", "Bearer replacement-pat-value"))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .set_body_string(r#"{"id": 42, "login": "verified-login"}"#)
+                .insert_header("x-oauth-scopes", "repo, read:user"),
+        )
+        .expect(1)
+        .mount(&server)
+        .await;
+
+    let gateway = ReqwestGithubApi::for_base_url(&server.uri())?;
+    let authenticated = gateway.authenticate_pat("replacement-pat-value").await?;
+
+    assert_eq!(
+        authenticated,
+        AuthenticatedUser {
+            provider_user_id: 42,
+            login: "verified-login".to_owned(),
+            granted_scopes: vec!["repo".to_owned(), "read:user".to_owned()],
+        }
+    );
+    server.verify().await;
+    Ok(())
+}
+
+#[tokio::test]
+async fn authenticated_gateway_supplies_its_redacting_pat_to_sync_requests()
+-> Result<(), Box<dyn std::error::Error>> {
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/user/starred"))
+        .and(query_param("page", "1"))
+        .and(header("authorization", "Bearer sync-replacement-pat"))
+        .respond_with(ResponseTemplate::new(200).set_body_string("[]"))
+        .expect(1)
+        .mount(&server)
+        .await;
+    let gateway = ReqwestGithubApi::for_base_url(&server.uri())?
+        .authenticated(SecretString::from("sync-replacement-pat"));
+
+    let reply = gateway.list_starred(None, 1).await?;
+
+    assert!(reply.page.items.is_empty());
+    server.verify().await;
+    Ok(())
+}
 
 #[tokio::test]
 async fn conditional_request_sends_if_none_match_and_short_circuits_on_304()

@@ -11,8 +11,9 @@ async fn assert_list_authority_carries_removal_evidence(
 ) -> Result<(), Box<dyn std::error::Error>> {
     let list_owner = Uuid::now_v7();
     sqlx::query(
-        "insert into github_catalog.github_accounts (account_id, owner_ref, status)
-         values ($1, 'list-holder', 'connected')",
+        "insert into github_catalog.github_accounts
+             (account_id, owner_ref, status, provider_user_id)
+         values ($1, 'list-holder', 'connected', 1)",
     )
     .bind(list_owner)
     .execute(database.database.pool())
@@ -81,8 +82,14 @@ async fn owned_schema_applies_twice_without_cross_schema_objects()
             "backup_policy_publication_cursor",
             "backup_policy_publications",
             "current_star_state",
+            "github_account_credentials",
             "github_accounts",
             "inbox_events",
+            "legacy_import_accounts",
+            "legacy_import_repository_records",
+            "legacy_import_runs",
+            "legacy_list_claims",
+            "legacy_shadow_reports",
             "list_snapshot_items",
             "mutation_audit",
             "outbox_events",
@@ -230,8 +237,9 @@ async fn assert_granted_scopes_default_empty(
     account_id: Uuid,
 ) -> Result<(), Box<dyn std::error::Error>> {
     sqlx::query(
-        "insert into github_catalog.github_accounts (account_id, owner_ref, status)
-         values ($1, 'mutator', 'connected')",
+        "insert into github_catalog.github_accounts
+             (account_id, owner_ref, status, provider_user_id)
+         values ($1, 'mutator', 'connected', 1)",
     )
     .bind(account_id)
     .execute(database.database.pool())
@@ -425,8 +433,9 @@ async fn reconciliation_repairs_carry_named_actions_once_per_run()
 -> Result<(), Box<dyn std::error::Error>> {
     let database = TestDatabase::create().await?;
     sqlx::query(
-        "insert into github_catalog.github_accounts (account_id, owner_ref, status)
-         values ($1, 'repairer', 'connected')",
+        "insert into github_catalog.github_accounts
+             (account_id, owner_ref, status, provider_user_id)
+         values ($1, 'repairer', 'connected', 1)",
     )
     .bind(uuid::Uuid::now_v7())
     .execute(database.database.pool())

@@ -3,6 +3,8 @@ use std::{error, fmt};
 
 use serde::Serialize;
 
+use crate::CredentialKey;
+
 const ENV_PREFIX: &str = "RATATOSKR__";
 
 /// Process configuration with finite built-in limits.
@@ -12,6 +14,10 @@ pub struct Config {
     pub admin: AdminConfig,
     /// Owned durable storage configuration.
     pub storage: StorageConfig,
+    /// Credential encryption configuration.
+    pub credentials: CredentialsConfig,
+    /// Ephemeral retired-source configuration used only by import commands.
+    pub legacy: LegacyConfig,
     /// Resource and shutdown limits.
     pub limits: Limits,
 }
@@ -24,11 +30,120 @@ pub struct AdminConfig {
 }
 
 /// `PostgreSQL` storage locations owned by this service.
-#[derive(Debug, Clone, Serialize)]
+#[derive(Clone, Serialize)]
 pub struct StorageConfig {
     /// Catalog `PostgreSQL` connection URL.
     #[serde(skip_serializing)]
     pub database_url: String,
+}
+
+impl fmt::Debug for StorageConfig {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("StorageConfig")
+            .field("database_url", &"[REDACTED]")
+            .finish()
+    }
+}
+
+/// Encryption configuration for locally stored GitHub credentials.
+#[derive(Clone, Serialize)]
+pub struct CredentialsConfig {
+    #[serde(skip_serializing)]
+    encryption_key_hex: Option<String>,
+    /// Non-secret label of the configured encryption key.
+    pub key_version: Option<String>,
+}
+
+impl CredentialsConfig {
+    /// Returns a parsed key for a credential registration operation.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ConfigError`] when registration encryption is not configured.
+    pub fn encryption_key(&self) -> Result<CredentialKey, ConfigError> {
+        let value = self.encryption_key_hex.as_deref().ok_or_else(|| {
+            ConfigError::new(
+                "RATATOSKR__CREDENTIALS__ENCRYPTION_KEY_HEX",
+                "must be configured for credential registration",
+            )
+        })?;
+        let version = self.key_version.as_deref().ok_or_else(|| {
+            ConfigError::new(
+                "RATATOSKR__CREDENTIALS__KEY_VERSION",
+                "must be configured for credential registration",
+            )
+        })?;
+        CredentialKey::from_hex(value, version).map_err(|_| {
+            ConfigError::new(
+                "RATATOSKR__CREDENTIALS__ENCRYPTION_KEY_HEX",
+                "must be a 32-byte hexadecimal AES key",
+            )
+        })
+    }
+
+    fn validate(&self) -> Result<(), ConfigError> {
+        match (&self.encryption_key_hex, &self.key_version) {
+            (None, None) => Ok(()),
+            (Some(_), Some(_)) => self.encryption_key().map(|_| ()),
+            (None, Some(_)) => Err(ConfigError::new(
+                "RATATOSKR__CREDENTIALS__ENCRYPTION_KEY_HEX",
+                "must be configured with RATATOSKR__CREDENTIALS__KEY_VERSION",
+            )),
+            (Some(_), None) => Err(ConfigError::new(
+                "RATATOSKR__CREDENTIALS__KEY_VERSION",
+                "must be configured with RATATOSKR__CREDENTIALS__ENCRYPTION_KEY_HEX",
+            )),
+        }
+    }
+}
+
+impl fmt::Debug for CredentialsConfig {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("CredentialsConfig")
+            .field(
+                "encryption_key_hex",
+                &self.encryption_key_hex.as_ref().map(|_| "[REDACTED]"),
+            )
+            .field("key_version", &self.key_version)
+            .finish()
+    }
+}
+
+/// Temporary source configuration for one legacy import invocation.
+#[derive(Clone, Serialize)]
+pub struct LegacyConfig {
+    #[serde(skip_serializing)]
+    source_database_url: Option<String>,
+}
+
+impl LegacyConfig {
+    /// Returns the temporary source URL required by a legacy import command.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ConfigError`] when no isolated source was configured.
+    pub fn source_database_url(&self) -> Result<&str, ConfigError> {
+        self.source_database_url.as_deref().ok_or_else(|| {
+            ConfigError::new(
+                "RATATOSKR__LEGACY__SOURCE_DATABASE_URL",
+                "must be configured for legacy import",
+            )
+        })
+    }
+}
+
+impl fmt::Debug for LegacyConfig {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("LegacyConfig")
+            .field(
+                "source_database_url",
+                &self.source_database_url.as_ref().map(|_| "[REDACTED]"),
+            )
+            .finish()
+    }
 }
 
 /// Finite limits used by the process foundation.
@@ -94,6 +209,7 @@ impl Config {
             apply_entry(&mut config, key, value.as_ref())?;
         }
 
+        config.credentials.validate()?;
         Ok(config)
     }
 }
@@ -135,6 +251,18 @@ fn apply_entry(config: &mut Config, key: &str, value: &str) -> Result<(), Config
                 .map_err(|_| ConfigError::new(key, "must be a PostgreSQL connection URL"))?;
             value.clone_into(&mut config.storage.database_url);
         }
+        "RATATOSKR__CREDENTIALS__ENCRYPTION_KEY_HEX" => {
+            config.credentials.encryption_key_hex = Some(value.to_owned());
+        }
+        "RATATOSKR__CREDENTIALS__KEY_VERSION" => {
+            config.credentials.key_version = Some(value.to_owned());
+        }
+        "RATATOSKR__LEGACY__SOURCE_DATABASE_URL" => {
+            value
+                .parse::<sqlx::postgres::PgConnectOptions>()
+                .map_err(|_| ConfigError::new(key, "must be a PostgreSQL connection URL"))?;
+            config.legacy.source_database_url = Some(value.to_owned());
+        }
         "RATATOSKR__LIMITS__DATABASE_CONNECTIONS" => {
             config.limits.database_connections = parse_positive(key, value)?;
         }
@@ -170,6 +298,13 @@ impl Default for Config {
             },
             storage: StorageConfig {
                 database_url: "postgres://github:github@127.0.0.1:5435/github".to_owned(),
+            },
+            credentials: CredentialsConfig {
+                encryption_key_hex: None,
+                key_version: None,
+            },
+            legacy: LegacyConfig {
+                source_database_url: None,
             },
             limits: Limits {
                 database_connections: 8,

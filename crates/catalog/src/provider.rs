@@ -5,6 +5,14 @@ use serde::{Deserialize, Serialize};
 
 use crate::rate_limit::RateLimitHeaders;
 
+mod authenticated;
+mod authentication;
+mod rate;
+
+pub use authenticated::AuthenticatedGithubApi;
+pub use authentication::AuthenticatedUser;
+pub(crate) use rate::{graphql_rate_limit, rate_headers_from};
+
 /// Fixed page size for starred-listing enumeration.
 const STARRED_PAGE_SIZE: u32 = 100;
 
@@ -309,57 +317,6 @@ pub trait GithubApi {
     ) -> impl std::future::Future<Output = Result<UserListsReply, ProviderError>> + Send;
 }
 
-/// Reads rate-limit headers off a response, tolerating absent values.
-#[must_use]
-pub(crate) fn rate_headers_from(headers: &reqwest::header::HeaderMap) -> RateLimitHeaders {
-    let parse_i64 = |name: &str| {
-        headers
-            .get(name)
-            .and_then(|value| value.to_str().ok())
-            .and_then(|value| value.parse::<i64>().ok())
-    };
-    RateLimitHeaders {
-        limit: parse_i64("x-ratelimit-limit"),
-        remaining: parse_i64("x-ratelimit-remaining"),
-        reset_epoch_seconds: parse_i64("x-ratelimit-reset"),
-        retry_after_seconds: headers
-            .get(reqwest::header::RETRY_AFTER)
-            .and_then(|value| value.to_str().ok())
-            .and_then(|value| value.parse::<u64>().ok()),
-    }
-}
-
-/// Maps one GraphQL reply's accounting onto the shared ledger shape:
-/// response headers win when present, and otherwise the in-body
-/// `rateLimit` object supplies remaining and reset.
-pub(crate) fn graphql_rate_limit(
-    header_rate: RateLimitHeaders,
-    body_rate: Option<&GraphqlRateLimit>,
-) -> RateLimitHeaders {
-    let from_headers = header_rate.limit.is_some()
-        || header_rate.remaining.is_some()
-        || header_rate.reset_epoch_seconds.is_some();
-    if from_headers || body_rate.is_none() {
-        return header_rate;
-    }
-    RateLimitHeaders {
-        limit: None,
-        remaining: body_rate.and_then(|rate| rate.remaining),
-        reset_epoch_seconds: body_rate
-            .and_then(|rate| rate.reset_at.as_deref())
-            .and_then(rfc3339_epoch),
-        retry_after_seconds: None,
-    }
-}
-
-/// Parses an RFC 3339 timestamp into whole epoch seconds.
-#[must_use]
-pub(crate) fn rfc3339_epoch(value: &str) -> Option<i64> {
-    time::OffsetDateTime::parse(value, &time::format_description::well_known::Rfc3339)
-        .ok()
-        .map(time::OffsetDateTime::unix_timestamp)
-}
-
 /// The reqwest-backed gateway to the GitHub REST API.
 ///
 /// Redirect following stays disabled on purpose: a permanent move must
@@ -492,6 +449,15 @@ impl ReqwestGithubApi {
             http,
             base_url: base_url.trim_end_matches('/').to_owned(),
         })
+    }
+
+    /// Binds a replacement credential to a short-lived provider gateway.
+    #[must_use]
+    pub fn authenticated(self, credential: secrecy::SecretString) -> AuthenticatedGithubApi {
+        AuthenticatedGithubApi {
+            gateway: self,
+            credential,
+        }
     }
 
     /// Posts one GraphQL document and returns the raw response; mutation

@@ -42,8 +42,9 @@ async fn seed_account(
 ) -> Result<Uuid, Box<dyn std::error::Error>> {
     let account_id = Uuid::now_v7();
     sqlx::query(
-        "insert into github_catalog.github_accounts (account_id, owner_ref, status)
-         values ($1, $2, 'connected')",
+        "insert into github_catalog.github_accounts
+             (account_id, owner_ref, status, provider_user_id)
+         values ($1, $2, 'connected', 1)",
     )
     .bind(account_id)
     .bind(owner_ref)

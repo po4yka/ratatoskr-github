@@ -1,0 +1,20 @@
+{
+  "source_id": "synthetic-legacy-fixture",
+  "owner_map": [
+    {
+      "legacy_user_id": 101,
+      "owner_ref": "user:018f0000-0000-7000-8000-000000000001"
+    }
+  ],
+  "repositories": [
+    {
+      "legacy_repository_id": 7,
+      "provider_repository_id": 99,
+      "owner": "example-owner",
+      "name": "example-repository",
+      "starred": true,
+      "observed_at": "2026-08-19T12:34:56Z",
+      "list_names": ["Archived List"]
+    }
+  ]
+}
