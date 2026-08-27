@@ -39,4 +39,4 @@
 
 - [x] 7.1 Update README status, `docs/INTERFACES.md`, deployment/config examples, telemetry/privacy notes, and current-schema documentation; documentation cannot start from a failing behavior test, so verify all documented routes/ports/outcomes match executable tests and no future capability is claimed
 - [x] 7.2 Run the exact fenced gate from `DEVELOPMENT.md` through `build-gate`, run `openspec validate expose-repository-interaction-api --type change --strict`, inspect `git diff --check` and the full diff, and rerun the live API smoke
-- [ ] 7.3 Fetch/rebase on current `origin/main`, rerun the full and live gates, commit only this change, integrate it into GitHub `main`, push `main`, and record the merged SHA and live command/API evidence for Telegram
+- [x] 7.3 Fetch/rebase on current `origin/main`, rerun the full and live gates, commit only this change, integrate it into GitHub `main`, push `main`, and record the merged SHA and live command/API evidence for Telegram
