@@ -8,6 +8,7 @@ use secrecy::{ExposeSecret as _, SecretString};
 use uuid::Uuid;
 
 use crate::Database;
+use crate::config::OAuthAppCredentials;
 
 /// Verified GitHub identity and scopes returned by provider authentication.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -107,13 +108,42 @@ pub async fn load_active_pat(
     account_id: Uuid,
     key: &CredentialKey,
 ) -> Result<SecretString, CredentialError> {
+    load_active_credential(database, account_id, key, "pat", None).await
+}
+
+/// Loads one active OAuth credential issued to the expected application.
+///
+/// # Errors
+///
+/// Returns [`CredentialError`] when the credential is unavailable or cannot be decrypted.
+pub async fn load_active_oauth(
+    database: &Database,
+    account_id: Uuid,
+    key: &CredentialKey,
+    oauth_client_id: &str,
+) -> Result<SecretString, CredentialError> {
+    load_active_credential(database, account_id, key, "oauth", Some(oauth_client_id)).await
+}
+
+async fn load_active_credential(
+    database: &Database,
+    account_id: Uuid,
+    key: &CredentialKey,
+    credential_kind: &str,
+    oauth_client_id: Option<&str>,
+) -> Result<SecretString, CredentialError> {
     let stored: Option<(Vec<u8>, Vec<u8>)> = sqlx::query_as(
         "select credential.encrypted_token, credential.nonce
          from github_catalog.github_account_credentials credential
          join github_catalog.github_accounts account on account.account_id = credential.account_id
-         where credential.account_id = $1 and account.status = 'connected'",
+         where credential.account_id = $1
+           and credential.credential_kind = $2
+           and credential.oauth_client_id is not distinct from $3
+           and account.status = 'connected'",
     )
     .bind(account_id)
+    .bind(credential_kind)
+    .bind(oauth_client_id)
     .fetch_optional(database.pool())
     .await
     .map_err(crate::PersistenceError::Query)?;
@@ -146,6 +176,70 @@ pub async fn register_pat(
     key: &CredentialKey,
     verified: &VerifiedGithubAccount,
 ) -> Result<(), CredentialError> {
+    register_credential(
+        database,
+        account_id,
+        pat,
+        key,
+        verified,
+        CredentialProvenance::Pat,
+    )
+    .await
+}
+
+/// Registers an already provider-verified OAuth access token for one account.
+///
+/// # Errors
+///
+/// Returns [`CredentialError`] when registration cannot complete.
+pub async fn register_oauth(
+    database: &Database,
+    account_id: Uuid,
+    access_token: SecretString,
+    key: &CredentialKey,
+    verified: &VerifiedGithubAccount,
+    oauth_app: &OAuthAppCredentials,
+) -> Result<(), CredentialError> {
+    register_credential(
+        database,
+        account_id,
+        access_token,
+        key,
+        verified,
+        CredentialProvenance::OAuth(&oauth_app.client_id),
+    )
+    .await
+}
+
+enum CredentialProvenance<'a> {
+    Pat,
+    OAuth(&'a str),
+}
+
+impl CredentialProvenance<'_> {
+    fn kind(&self) -> &'static str {
+        match self {
+            Self::Pat => "pat",
+            Self::OAuth(_) => "oauth",
+        }
+    }
+
+    fn oauth_client_id(&self) -> Option<&str> {
+        match self {
+            Self::Pat => None,
+            Self::OAuth(client_id) => Some(*client_id),
+        }
+    }
+}
+
+async fn register_credential(
+    database: &Database,
+    account_id: Uuid,
+    token: SecretString,
+    key: &CredentialKey,
+    verified: &VerifiedGithubAccount,
+    provenance: CredentialProvenance<'_>,
+) -> Result<(), CredentialError> {
     if verified.provider_user_id <= 0 || verified.login.is_empty() {
         return Err(CredentialError::AccountNotAwaitingReauthorization);
     }
@@ -155,7 +249,7 @@ pub async fn register_pat(
         .encrypt(
             &Nonce::<U12>::try_from(nonce.as_slice()).map_err(|_| CredentialError::Encryption)?,
             Payload {
-                msg: pat.expose_secret().as_bytes(),
+                msg: token.expose_secret().as_bytes(),
                 aad: account_id.as_bytes(),
             },
         )
@@ -185,16 +279,20 @@ pub async fn register_pat(
     }
     sqlx::query(
         "insert into github_catalog.github_account_credentials
-             (account_id, key_version, encrypted_token, nonce)
-         values ($1, $2, $3, $4)
+             (account_id, key_version, credential_kind, oauth_client_id, encrypted_token, nonce)
+         values ($1, $2, $3, $4, $5, $6)
          on conflict (account_id) do update set
              key_version = excluded.key_version,
+             credential_kind = excluded.credential_kind,
+             oauth_client_id = excluded.oauth_client_id,
              encrypted_token = excluded.encrypted_token,
              nonce = excluded.nonce,
              updated_at = now()",
     )
     .bind(account_id)
     .bind(&key.version)
+    .bind(provenance.kind())
+    .bind(provenance.oauth_client_id())
     .bind(encrypted_token)
     .bind(nonce.to_vec())
     .execute(&mut *transaction)

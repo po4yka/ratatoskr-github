@@ -39,6 +39,36 @@ fn credential_key_configuration_is_accepted_but_never_serialized_or_debugged()
 }
 
 #[test]
+fn oauth_app_configuration_is_complete_and_redacted() -> Result<(), Box<dyn std::error::Error>> {
+    let client_id = "Iv1.abcdef0123456789";
+    let client_secret = "synthetic-oauth-client-secret";
+    let configured = Config::from_environment([
+        ("RATATOSKR__GITHUB_OAUTH__CLIENT_ID", client_id),
+        ("RATATOSKR__GITHUB_OAUTH__CLIENT_SECRET", client_secret),
+    ]);
+
+    assert!(configured.is_ok(), "complete OAuth configuration must load");
+    let configured = configured?;
+    let serialized = serde_json::to_string(&configured)?;
+    let debug = format!("{configured:?}");
+    assert!(!serialized.contains(client_secret));
+    assert!(!debug.contains(client_secret));
+
+    for entries in [
+        vec![("RATATOSKR__GITHUB_OAUTH__CLIENT_ID", client_id)],
+        vec![("RATATOSKR__GITHUB_OAUTH__CLIENT_SECRET", client_secret)],
+    ] {
+        let result = Config::from_environment(entries);
+        assert!(
+            result.is_err(),
+            "partial OAuth configuration must be refused"
+        );
+    }
+
+    Ok(())
+}
+
+#[test]
 fn legacy_source_configuration_is_accepted_but_never_serialized_or_debugged()
 -> Result<(), Box<dyn std::error::Error>> {
     let source_url = "postgres://legacy-reader:synthetic@127.0.0.1:5435/legacy";

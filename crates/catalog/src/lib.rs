@@ -8,6 +8,7 @@
 //! credentials, synchronization, and provider access arrive with later
 //! implementation plan items.
 
+mod account_erasure;
 mod backup_policy;
 mod commands;
 mod config;
@@ -33,6 +34,7 @@ mod watches;
 #[cfg(feature = "test-support")]
 pub mod test_support;
 
+pub use account_erasure::{AccountErasureError, erase_account};
 pub use backup_policy::{
     BackupPolicyError, BackupPolicyInput, FeedbackOutcome, POLICY_DEBOUNCE, PolicyFeedback,
     PublicationOutcome, derive_backup_policy, latest_backup_policy_feedback,
@@ -43,10 +45,12 @@ pub use commands::{
     SyncCommandError, handle_sync_command,
 };
 pub use config::{
-    AdminConfig, Config, ConfigError, CredentialsConfig, LegacyConfig, Limits, StorageConfig,
+    AdminConfig, Config, ConfigError, CredentialsConfig, GithubOAuthConfig, LegacyConfig, Limits,
+    OAuthAppCredentials, StorageConfig,
 };
 pub use credentials::{
-    CredentialError, CredentialKey, VerifiedGithubAccount, load_active_pat, register_pat,
+    CredentialError, CredentialKey, VerifiedGithubAccount, load_active_oauth, load_active_pat,
+    register_oauth, register_pat,
 };
 pub use database::{Database, PersistenceError};
 pub use identity::{
