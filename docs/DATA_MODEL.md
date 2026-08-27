@@ -9,6 +9,7 @@
 - `star_lists`, `star_list_memberships`, list snapshots.
 - `repository_modes`, `watch_rules`, `backup_policies`, analysis references.
 - mutation audits, sync runs, outbox/inbox.
+- `repository_action_attempts`, the owner-bound request fingerprint and exact safe terminal result used for action replay.
 
 ## Implemented tables
 
@@ -21,6 +22,13 @@ Incremental scans and scheduled reconciliation (item 5) extend the same tables i
 Native star-list snapshots (item 6) extend the schema in place as a peer authority: `sync_runs.mode = 'star_lists'` marks list runs with their own `lists_observed` and `removals` statistics; `sync_checkpoints.graphql_cursor` carries the Relay continuation token of cursor-paginated GraphQL enumeration; `list_snapshot_items` stages one flat row per observed membership per run. `star_lists` holds provider list identity keyed `(account_id, provider_list_id)` with tombstone state (`status`, `observed_removed_at`, `evidence_run_id`) instead of deletion. `star_list_memberships` is the current membership projection - `member`, `last_observed_at`, `observed_removed_at`, `evidence_run_id` - where rows persist across removals so every transition stays explainable; the provider supplies no per-item added-at, so membership timing is modeled purely as observation times. `star_list_membership_observations` is append-only evidence: one row per membership seen by a completed enumeration plus one row per evidenced removal, all bound to the completing run.
 
 Repository modes and mutations (item 7) extend the schema in place: `repositories.mode` carries the `auto`/`tracked`/`ignored` vocabulary (null is unclassified), `github_accounts.granted_scopes` records observed provider scopes for capability enforcement, and `mutation_audit` is the append-only trail of every mode transition and provider mutation attempt - principal, calling source, target, outcome, detail, idempotency key - where only successful outcomes claim a key (partial unique index), failures never consume one, and refusals keep their account claim without a foreign key because the trail records claims rather than vouching for them.
+
+Repository interaction API actions use `repository_action_attempts`. Its opaque
+idempotency key is globally bound to one `user:<uuid>` owner and one complete
+request fingerprint (target, mode, account, confirmation reference). A terminal
+row contains the exact shared result JSON. An in-progress row contains no result;
+a completed row must contain one. This is replay authority, not provider-token or
+Telegram callback storage.
 
 Watches and Knowledge requests (item 9) replace the placeholder `repository_watches` with a
 user-scoped `metadata_changed` policy, downstream action, enabled/paused state, and metadata-hash

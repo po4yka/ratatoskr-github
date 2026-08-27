@@ -52,6 +52,65 @@ pub struct SetModeRequest {
     pub idempotency_key: String,
 }
 
+/// Outcome of accepting explicit tracked-mode intent through the domain API.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TrackOutcome {
+    /// The repository became tracked and desired backup policy was dirtied.
+    Accepted,
+    /// The same tracked intent had already been applied.
+    AlreadyApplied,
+}
+
+/// Applies explicit tracked intent without requiring a provider account.
+///
+/// The caller owns confirmation and audit evidence. This primitive owns only the Catalog mode and
+/// atomic desired-policy dirtiness that make the accepted result true.
+///
+/// # Errors
+///
+/// Returns [`PersistenceError`] when the current Catalog transaction cannot commit.
+pub async fn track_repository(
+    database: &Database,
+    provider_repository_id: i64,
+) -> Result<TrackOutcome, PersistenceError> {
+    let mut transaction = database
+        .pool()
+        .begin()
+        .await
+        .map_err(PersistenceError::Query)?;
+    let repository_id =
+        crate::identity::upsert_repository_in_tx(&mut transaction, provider_repository_id).await?;
+    let mode: Option<String> = sqlx::query_scalar(
+        "select mode from github_catalog.repositories where repository_id = $1 for update",
+    )
+    .bind(repository_id)
+    .fetch_one(&mut *transaction)
+    .await
+    .map_err(PersistenceError::Query)?;
+    if mode.as_deref() == Some("tracked") {
+        transaction
+            .commit()
+            .await
+            .map_err(PersistenceError::Query)?;
+        return Ok(TrackOutcome::AlreadyApplied);
+    }
+    sqlx::query(
+        "update github_catalog.repositories
+         set mode = 'tracked', updated_at = now()
+         where repository_id = $1",
+    )
+    .bind(repository_id)
+    .execute(&mut *transaction)
+    .await
+    .map_err(PersistenceError::Query)?;
+    crate::backup_policy::mark_backup_policy_dirty_in_tx(&mut transaction).await?;
+    transaction
+        .commit()
+        .await
+        .map_err(PersistenceError::Query)?;
+    Ok(TrackOutcome::Accepted)
+}
+
 /// Applies one authorized mode transition and reports its truthful outcome.
 ///
 /// # Errors

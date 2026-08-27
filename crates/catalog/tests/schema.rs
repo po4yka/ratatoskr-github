@@ -95,6 +95,7 @@ async fn owned_schema_applies_twice_without_cross_schema_objects()
             "outbox_events",
             "reconciliation_repairs",
             "repositories",
+            "repository_action_attempts",
             "repository_aliases",
             "repository_analysis_dispatch_cursor",
             "repository_analysis_links",
@@ -122,6 +123,54 @@ async fn owned_schema_applies_twice_without_cross_schema_objects()
     .fetch_one(database.database.pool())
     .await?;
     assert_eq!(cross_schema_count, 0);
+
+    database.cleanup().await?;
+    Ok(())
+}
+
+#[tokio::test]
+async fn repository_action_attempts_bind_keys_to_one_owner_and_terminal_result()
+-> Result<(), Box<dyn std::error::Error>> {
+    let database = TestDatabase::create().await?;
+    let insert = "insert into github_catalog.repository_action_attempts
+             (owner_ref, idempotency_key, request_fingerprint, mode,
+              github_repository_numeric_id, repository_full_name, canonical_url,
+              confirmation_evidence_ref)
+         values ($1, 'action-key', '{}'::jsonb, 'metadata', 42,
+                 'owner/repository', 'https://github.com/owner/repository',
+                 'telegram-confirmation:evidence')";
+    sqlx::query(insert)
+        .bind("user:018f0000-0000-7000-8000-000000000701")
+        .execute(database.database.pool())
+        .await?;
+
+    let foreign_reuse = sqlx::query(insert)
+        .bind("user:018f0000-0000-7000-8000-000000000702")
+        .execute(database.database.pool())
+        .await;
+    assert!(
+        foreign_reuse.is_err(),
+        "one action key must not cross owner boundaries"
+    );
+    let terminal_without_result = sqlx::query(
+        "update github_catalog.repository_action_attempts
+         set status = 'completed', completed_at = now()
+         where idempotency_key = 'action-key'",
+    )
+    .execute(database.database.pool())
+    .await;
+    assert!(
+        terminal_without_result.is_err(),
+        "a completed attempt must retain its exact result"
+    );
+    sqlx::query(
+        "update github_catalog.repository_action_attempts
+         set status = 'completed', result = '{\"aggregate\":\"failed\"}'::jsonb,
+             completed_at = now()
+         where idempotency_key = 'action-key'",
+    )
+    .execute(database.database.pool())
+    .await?;
 
     database.cleanup().await?;
     Ok(())

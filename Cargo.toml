@@ -15,7 +15,7 @@ repository = "https://github.com/po4yka/ratatoskr-github"
 [workspace.dependencies]
 ratatoskr-github-catalog = { version = "=0.1.0", path = "crates/catalog" }
 
-axum = { version = "=0.8.9", default-features = false, features = ["http1", "tokio"] }
+axum = { version = "=0.8.9", default-features = false, features = ["http1", "json", "tokio"] }
 aes-gcm = "=0.11.1"
 http-body-util = "=0.1.5"
 reqwest = { version = "=0.12.28", default-features = false, features = ["json", "rustls-tls"] }
@@ -50,11 +50,12 @@ tracing-subscriber = { version = "=0.3.23", default-features = false, features =
 ] }
 uuid = { version = "=1.24.1", features = ["v7"] }
 wiremock = "=0.6.5"
-ratatoskr-backup-contracts = { git = "https://github.com/po4yka/ratatoskr-contracts.git", rev = "55a96859363c45d7f3c4bc65db527363bfb947ea" }
-ratatoskr-event-envelope = { git = "https://github.com/po4yka/ratatoskr-contracts.git", rev = "55a96859363c45d7f3c4bc65db527363bfb947ea" }
-ratatoskr-github-contracts = { git = "https://github.com/po4yka/ratatoskr-contracts.git", rev = "55a96859363c45d7f3c4bc65db527363bfb947ea" }
-ratatoskr-identifiers = { git = "https://github.com/po4yka/ratatoskr-contracts.git", rev = "55a96859363c45d7f3c4bc65db527363bfb947ea" }
-ratatoskr-operation-contracts = { git = "https://github.com/po4yka/ratatoskr-contracts.git", rev = "55a96859363c45d7f3c4bc65db527363bfb947ea" }
+ratatoskr-backup-contracts = { git = "https://github.com/po4yka/ratatoskr-contracts.git", rev = "5b8bbb4220375f6236066a23b19e9d6f8faaaf28" }
+ratatoskr-event-envelope = { git = "https://github.com/po4yka/ratatoskr-contracts.git", rev = "5b8bbb4220375f6236066a23b19e9d6f8faaaf28" }
+ratatoskr-error-contracts = { git = "https://github.com/po4yka/ratatoskr-contracts.git", rev = "5b8bbb4220375f6236066a23b19e9d6f8faaaf28" }
+ratatoskr-github-contracts = { git = "https://github.com/po4yka/ratatoskr-contracts.git", rev = "5b8bbb4220375f6236066a23b19e9d6f8faaaf28" }
+ratatoskr-identifiers = { git = "https://github.com/po4yka/ratatoskr-contracts.git", rev = "5b8bbb4220375f6236066a23b19e9d6f8faaaf28" }
+ratatoskr-operation-contracts = { git = "https://github.com/po4yka/ratatoskr-contracts.git", rev = "5b8bbb4220375f6236066a23b19e9d6f8faaaf28" }
 sha2 = "=0.10.9"
 
 [workspace.lints.rust]

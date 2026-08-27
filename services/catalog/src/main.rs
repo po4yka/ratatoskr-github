@@ -18,7 +18,8 @@ use ratatoskr_github_catalog::{
     run_full_snapshot, run_star_list_snapshot,
 };
 use ratatoskr_github_catalog_service::{
-    Lifecycle, OperatorCommand, OperatorCommandError, admin_router, parse_operator_command,
+    Lifecycle, OperatorCommand, OperatorCommandError, RepositoryApiState, admin_router,
+    domain_router, parse_operator_command,
 };
 use secrecy::{ExposeSecret as _, SecretString};
 use uuid::Uuid;
@@ -77,11 +78,11 @@ enum ProcessError {
     /// Operator output could not be written atomically.
     #[error("operator output could not be written")]
     Output(#[source] std::io::Error),
-    /// The operator listener could not be bound.
-    #[error("the operator listener could not be bound")]
+    /// A configured service listener could not be bound.
+    #[error("a configured service listener could not be bound")]
     Bind(#[source] std::io::Error),
-    /// The operator server failed while serving.
-    #[error("the operator server failed")]
+    /// A service listener failed while serving.
+    #[error("a service listener failed")]
     Serve(#[source] std::io::Error),
 }
 
@@ -218,12 +219,24 @@ async fn serve(config: Config) -> Result<(), ProcessError> {
     let database = connect_database(&config).await?;
 
     let lifecycle = Lifecycle::starting();
-    let listener = tokio::net::TcpListener::bind(config.admin.listen_address)
+    let admin_listener = tokio::net::TcpListener::bind(config.admin.listen_address)
         .await
         .map_err(ProcessError::Bind)?;
+    let api_listener = tokio::net::TcpListener::bind(config.api.listen_address)
+        .await
+        .map_err(ProcessError::Bind)?;
+    let provider = ReqwestGithubApi::for_base_url(&config.provider.base_url)
+        .map_err(ProcessError::Provider)?;
+    let repository_api = RepositoryApiState::new(
+        database.clone(),
+        provider,
+        config.credentials.encryption_key().ok(),
+    );
     lifecycle.mark_ready();
-    serve_admin(
-        listener,
+    serve_listeners(
+        admin_listener,
+        api_listener,
+        repository_api,
         lifecycle,
         database,
         Duration::from_millis(config.limits.shutdown_timeout_ms),
@@ -288,37 +301,60 @@ fn read_replacement_pat() -> Result<SecretString, ProcessError> {
     Ok(SecretString::from(value))
 }
 
-async fn serve_admin(
-    listener: tokio::net::TcpListener,
+async fn serve_listeners(
+    admin_listener: tokio::net::TcpListener,
+    api_listener: tokio::net::TcpListener,
+    repository_api: RepositoryApiState,
     lifecycle: Lifecycle,
     database: Database,
     shutdown_timeout: Duration,
 ) -> Result<(), ProcessError> {
-    let (shutdown_tx, shutdown_rx) = tokio::sync::oneshot::channel();
-    let server = axum::serve(listener, admin_router(lifecycle))
-        .with_graceful_shutdown(async move {
-            let _ignored = shutdown_rx.await;
-        })
+    let (shutdown_tx, shutdown_rx) = tokio::sync::watch::channel(false);
+    let admin_shutdown = shutdown_rx.clone();
+    let api_shutdown = shutdown_rx;
+    let admin_server = axum::serve(admin_listener, admin_router(lifecycle.clone()))
+        .with_graceful_shutdown(wait_for_shutdown(admin_shutdown))
         .into_future();
-    tokio::pin!(server);
-    tokio::select! {
-        result = &mut server => {
-            database.close().await;
-            result.map_err(ProcessError::Serve)?;
+    let api_server = axum::serve(api_listener, domain_router(repository_api))
+        .with_graceful_shutdown(wait_for_shutdown(api_shutdown))
+        .into_future();
+    tokio::pin!(admin_server);
+    tokio::pin!(api_server);
+    let outcome = tokio::select! {
+        result = &mut admin_server => {
+            let _ignored = shutdown_tx.send(true);
+            let peer = api_server.await;
+            result.and(peer)
+        }
+        result = &mut api_server => {
+            let _ignored = shutdown_tx.send(true);
+            let peer = admin_server.await;
+            result.and(peer)
         }
         result = shutdown_signal() => {
             result.map_err(ProcessError::Serve)?;
-            let _ignored = shutdown_tx.send(());
-            if tokio::time::timeout(shutdown_timeout, &mut server).await.is_err() {
-                database.close().await;
-                return Err(ProcessError::Serve(std::io::Error::other(
-                    "the operator server did not stop within the shutdown bound",
-                )));
-            }
-            database.close().await;
+            lifecycle.begin_drain();
+            let _ignored = shutdown_tx.send(true);
+            tokio::time::timeout(shutdown_timeout, async {
+                let (admin, api) = tokio::join!(&mut admin_server, &mut api_server);
+                admin.and(api)
+            })
+            .await
+            .map_err(|_| ProcessError::Serve(std::io::Error::other(
+                "service listeners did not stop within the shutdown bound",
+            )))?
+        }
+    };
+    database.close().await;
+    outcome.map_err(ProcessError::Serve)
+}
+
+async fn wait_for_shutdown(mut receiver: tokio::sync::watch::Receiver<bool>) {
+    while !*receiver.borrow_and_update() {
+        if receiver.changed().await.is_err() {
+            break;
         }
     }
-    Ok(())
 }
 
 #[cfg(unix)]

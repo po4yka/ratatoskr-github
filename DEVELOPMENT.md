@@ -3,7 +3,27 @@
 > Status: Active  
 > Last reviewed: 2026-08-23
 
-The service foundation is implemented: a Rust workspace with typed configuration, structured telemetry, operator health routes, and the first-version `github_catalog` schema. Repository identity, mutable aliases with redirect history, metadata projection with conditional requests, per-token rate-limit accounting, and bounded revision history are implemented on that foundation, as are full star snapshots: complete enumeration under rate budgets, durable resumable checkpoints, atomic authority swap in one transaction, and evidenced unstar observations. Incremental scans with watermark governance and gap-forced rescans run on a consumed schedule. Native star lists snapshot over GraphQL under cursor checkpoints with the same atomic authority, evidenced membership observations, tombstoned lists, and truncation refusal, chained independently onto every commanded sync. Repository modes (`auto`, `tracked`, `ignored`) carry validated audited transitions, synchronization promotes only unclassified entries to auto, and explicit consent-carrying mutations - idempotent star/unstar and star-list membership writes under an authorization context with granted-scope enforcement, replay-safe audit entries, and truthful partial-success batch outcomes - execute through documented star mutations and the legacy-proven list-membership write. Account credentials and event handling are not implemented.
+The service foundation and repository domain API are implemented. The real process binds loopback operator and Edge-authenticated domain listeners, stores replacement PATs encrypted, serves read-only repository previews, and executes confirmed `metadata`/`track`/`star` actions with durable exact replay and truthful component outcomes. Snapshot, list, mode, mutation, watch, analysis-request, and desired-policy behavior remains as documented in the repository specs. OAuth and live fleet-bus handling are not implemented.
+
+### Local process configuration
+
+The defaults bind operator routes to `127.0.0.1:9095`, domain routes to
+`127.0.0.1:8092`, PostgreSQL to `127.0.0.1:5435`, and the provider to
+`https://api.github.com`. Deployment may override them with:
+
+```bash
+RATATOSKR__ADMIN__LISTEN_ADDRESS=127.0.0.1:9095
+RATATOSKR__API__LISTEN_ADDRESS=127.0.0.1:8092
+RATATOSKR__STORAGE__DATABASE_URL=postgres://github:github@127.0.0.1:5435/github
+RATATOSKR__PROVIDER__BASE_URL=https://api.github.com
+RATATOSKR__CREDENTIALS__ENCRYPTION_KEY_HEX=<64 lowercase or uppercase hex characters>
+RATATOSKR__CREDENTIALS__KEY_VERSION=<non-secret key label>
+```
+
+Both listeners must remain distinct loopback sockets. Provider HTTP is accepted
+only for a numeric loopback origin in synthetic tests. The database URL and
+encryption key are secrets and must come from the deployment secret store, not
+arguments or logs.
 
 ## Toolchain and gate
 

@@ -14,6 +14,12 @@ Required tests:
 
 Default tests use WireMock/fixtures and no personal GitHub token. An opt-in sandbox suite may use a dedicated test account.
 
+`services/catalog/tests/live_repository_api.rs` is the repository API smoke:
+it creates a disposable database from the current schema, starts the real
+service binary on reserved loopback ports, calls readiness/capabilities/preview,
+and drives a confirmed star against WireMock. Its injected post-provider policy
+failure must produce a partial result and zero compensating unstar requests.
+
 ## Test-first
 
 A change is planned before it is built, and the plan is a task list in which behaviour arrives in

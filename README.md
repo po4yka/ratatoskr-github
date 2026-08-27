@@ -2,7 +2,7 @@
 
 `ratatoskr-github` is the GitHub Catalog bounded context for Ratatoskr. It records what repositories a user has starred or chosen to track, preserves GitHub metadata and list membership, coordinates repository analysis, and publishes the desired backup state consumed by Git Vault.
 
-> **Status:** implementation plan items 1 and 3 through 8 are complete: a Rust service runs locally with typed strict configuration, structured telemetry, operator health routes (`/live`, `/ready`, `/metrics`, `/version`), stable repository identity and star/list synchronization, audited repository modes and idempotent provider mutations, and a durable desired-backup-policy publication cursor. Catalog derives a complete `DesiredBackupPolicy` v1 with stable repository references, cadence/priority/size hints and exclusions, publishes only changed versions through `cmd.vault.target.desired.v1`, and records `evt.vault.backup_policy.acknowledged.v1` idempotently for operator visibility. Account credentials, public APIs, and live fleet-bus handlers remain planned.
+> **Status:** a Rust service runs locally with strict configuration, structured process telemetry, operator health routes (`/live`, `/ready`, `/metrics`, `/version`), stable repository identity and star/list synchronization, encrypted replacement-PAT storage, audited repository modes and provider mutations, and desired-backup-policy publication. A separate loopback domain listener serves Edge-authenticated repository preview and confirmed `metadata`/`track`/`star` actions with durable replay and component-level partial results. OAuth, an internet-facing API, and live fleet-bus handlers remain planned.
 
 > [!IMPORTANT]
 > **Ratatoskr is in development.** No database holds data that has to survive a schema change.
@@ -73,12 +73,16 @@ repositories
 repository_aliases (live/superseded status, redirect history)
 repository_metadata
 repository_metadata_revisions
+github_account_credentials
 star_observations
 current_star_state
 star_lists
 star_list_memberships
 repository_watches
 backup_policies
+backup_policy_publication_cursor
+mutation_audit
+repository_action_attempts
 sync_runs
 sync_checkpoints
 outbox_events
@@ -86,8 +90,9 @@ inbox_events
 ```
 
 Repository identity, aliases, metadata projection with conditional requests,
-per-token rate-limit accounting, and bounded revision history are implemented.
-Credential storage, rate-limit persistence, analysis references, and the behavior behind the remaining placeholder tables remain planned.
+per-token rate-limit accounting, bounded revision history, encrypted replacement
+credentials, action replay, and mutation auditing are implemented. OAuth and
+rate-limit persistence remain planned.
 
 Typical repository metadata includes:
 
@@ -195,16 +200,17 @@ The API and Telegram flows preserve three distinct modes:
 |---|---:|---:|---:|
 | `metadata` | Yes | No | No |
 | `track` | Yes | No | Yes |
-| `star` | Yes | Yes | Optional by policy |
+| `star` | Yes | Yes | Desired policy accepted |
 
-A pasted GitHub URL defaults to the safe `metadata` path. External writes require an explicit command or confirmed UI action.
+A pasted GitHub URL is preview-only until a caller submits one confirmed action.
+External writes require an opaque confirmation-evidence reference and an
+idempotency key; the service also rechecks user/account ownership and scope.
 
 The operation runs in increasing order of user-visible commitment:
 
 1. fetch and store metadata;
 2. optionally star the repository;
-3. optionally update native list membership;
-4. publish desired backup state.
+3. accept desired backup state when the selected mode requires it.
 
 A later failure does not roll back an earlier successful external action. Responses report truthful partial success with warnings rather than pretending the entire workflow was atomic.
 

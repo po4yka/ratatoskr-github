@@ -6,51 +6,63 @@ use std::process::{Child, Command, Stdio};
 use std::time::{Duration, Instant};
 
 #[tokio::test]
-async fn configured_process_serves_operator_routes_and_stops_on_sigterm()
+async fn configured_process_serves_distinct_operator_and_domain_listeners_and_stops_on_sigterm()
 -> Result<(), Box<dyn std::error::Error>> {
     let database = ratatoskr_github_catalog::test_support::TestDatabase::create().await?;
     let database_name: String = sqlx::query_scalar("select current_database()")
         .fetch_one(database.database.pool())
         .await?;
     let database_url = test_database_url(&database_name)?;
-    let reserved = TcpListener::bind("127.0.0.1:0")?;
-    let address = reserved.local_addr()?;
+    let reserved_admin = TcpListener::bind("127.0.0.1:0")?;
+    let admin_address = reserved_admin.local_addr()?;
+    let reserved_api = TcpListener::bind("127.0.0.1:0")?;
+    let api_address = reserved_api.local_addr()?;
 
-    let check = configured_command(address, &database_url)
+    let check = configured_command(admin_address, api_address, &database_url)
         .arg("check-config")
         .status()?;
     assert!(check.success());
-    drop(reserved);
+    drop(reserved_admin);
+    drop(reserved_api);
 
-    let mut child = configured_command(address, &database_url)
+    let mut child = configured_command(admin_address, api_address, &database_url)
         .stdout(Stdio::null())
         .stderr(Stdio::null())
         .spawn()?;
-    let result = exercise_process(&mut child, address);
+    let result = exercise_process(&mut child, admin_address, api_address);
     stop_process(&mut child)?;
 
     database.cleanup().await?;
     result
 }
 
-fn configured_command(address: SocketAddr, database_url: &str) -> Command {
+fn configured_command(
+    admin_address: SocketAddr,
+    api_address: SocketAddr,
+    database_url: &str,
+) -> Command {
     let mut command = Command::new(env!("CARGO_BIN_EXE_ratatoskr-github-catalog"));
     command
-        .env("RATATOSKR__ADMIN__LISTEN_ADDRESS", address.to_string())
+        .env(
+            "RATATOSKR__ADMIN__LISTEN_ADDRESS",
+            admin_address.to_string(),
+        )
+        .env("RATATOSKR__API__LISTEN_ADDRESS", api_address.to_string())
         .env("RATATOSKR__STORAGE__DATABASE_URL", database_url);
     command
 }
 
 fn exercise_process(
     child: &mut Child,
-    address: SocketAddr,
+    admin_address: SocketAddr,
+    api_address: SocketAddr,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let deadline = Instant::now() + Duration::from_secs(5);
     loop {
         if let Some(status) = child.try_wait()? {
             return Err(format!("process exited before readiness: {status}").into());
         }
-        if http_status(address, "/ready").is_ok_and(|status| status == 200) {
+        if http_status(admin_address, "/ready").is_ok_and(|status| status == 200) {
             break;
         }
         if Instant::now() >= deadline {
@@ -58,10 +70,15 @@ fn exercise_process(
         }
         std::thread::sleep(Duration::from_millis(20));
     }
-    assert_eq!(http_status(address, "/live")?, 200);
-    assert_eq!(http_status(address, "/metrics")?, 200);
-    assert_eq!(http_status(address, "/version")?, 200);
-    assert_eq!(http_status(address, "/unrelated")?, 404);
+    assert_eq!(http_status(admin_address, "/live")?, 200);
+    assert_eq!(http_status(admin_address, "/metrics")?, 200);
+    assert_eq!(http_status(admin_address, "/version")?, 200);
+    assert_eq!(http_status(admin_address, "/unrelated")?, 404);
+    assert_eq!(
+        http_status(api_address, "/unrelated")?,
+        404,
+        "the separately configured domain listener must accept HTTP"
+    );
     Ok(())
 }
 

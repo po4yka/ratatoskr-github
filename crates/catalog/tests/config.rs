@@ -14,6 +14,50 @@ fn defaults_are_finite_and_loopback() {
 }
 
 #[test]
+fn domain_api_listener_is_loopback_and_provider_test_url_is_bounded() {
+    let configured = Config::from_environment([
+        ("RATATOSKR__API__LISTEN_ADDRESS", "127.0.0.1:8092"),
+        ("RATATOSKR__PROVIDER__BASE_URL", "http://127.0.0.1:18092"),
+    ]);
+    assert!(
+        configured.is_ok(),
+        "the domain listener and bounded provider test URL must be recognized"
+    );
+
+    let config = configured.unwrap_or_default();
+    let encoded = serde_json::to_value(&config).unwrap_or_default();
+    let api_address = encoded
+        .pointer("/api/listen_address")
+        .and_then(serde_json::Value::as_str)
+        .unwrap_or_default();
+    let provider_base_url = encoded
+        .pointer("/provider/base_url")
+        .and_then(serde_json::Value::as_str)
+        .unwrap_or_default();
+
+    assert_eq!(api_address, "127.0.0.1:8092");
+    assert_ne!(api_address, config.admin.listen_address.to_string());
+    assert_eq!(provider_base_url, "http://127.0.0.1:18092");
+
+    for value in ["0.0.0.0:8092", "127.0.0.1:0"] {
+        assert!(
+            Config::from_environment([("RATATOSKR__API__LISTEN_ADDRESS", value)]).is_err(),
+            "unsafe domain listener was accepted: {value}"
+        );
+    }
+    for value in [
+        "http://github.com",
+        "http://192.0.2.1:18092",
+        "ftp://127.0.0.1:18092",
+    ] {
+        assert!(
+            Config::from_environment([("RATATOSKR__PROVIDER__BASE_URL", value)]).is_err(),
+            "unsafe provider base URL was accepted: {value}"
+        );
+    }
+}
+
+#[test]
 fn serialization_omits_the_database_url() -> Result<(), serde_json::Error> {
     let config = Config::default();
 

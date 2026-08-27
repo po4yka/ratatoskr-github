@@ -10,6 +10,7 @@ OAuth/PAT credentials, private repository metadata, star/list intent, organizati
 - **OAuth account mix-up:** PKCE/state and exact internal-user/callback binding.
 - **False unstar/list removal:** only complete snapshots authorize absence; interrupted pages cannot commit.
 - **Duplicate external mutation:** idempotency, current-state checks, serialized account writes, audit.
+- **Forged/replayed confirmation:** Edge identity, opaque caller-owned confirmation evidence, account-owner/scope recheck, and owner-bound single-use action key. Callback authority remains in Telegram/Platform; this service never trusts presentation labels.
 - **Private metadata leak:** owner authorization before query/event/projection and safe telemetry.
 - **Rate-limit exhaustion:** conditional requests, checkpoints, budgets, retry-after, bounded concurrency.
 - **Policy escalation:** explicit consent and audit for star/track/pin/complete archive changes.

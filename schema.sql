@@ -585,6 +585,42 @@ create unique index if not exists mutation_audit_one_success_per_key
 create index if not exists mutation_audit_key_lookup
     on github_catalog.mutation_audit (idempotency_key);
 
+-- Edge repository actions retain the exact safe component result so retries
+-- replay observed truth without repeating provider work. The opaque key is
+-- globally single-owner: forwarding or reusing it as another user is a
+-- conflict, never a way to observe the original result.
+create table if not exists github_catalog.repository_action_attempts (
+    owner_ref                    text not null,
+    idempotency_key              text not null,
+    request_fingerprint          jsonb not null,
+    mode                         text not null,
+    github_repository_numeric_id numeric(20, 0) not null,
+    repository_full_name         text not null,
+    canonical_url                text not null,
+    account_ref                  text,
+    confirmation_evidence_ref    text not null,
+    status                       text not null default 'in_progress',
+    result                       jsonb,
+    created_at                   timestamptz not null default now(),
+    completed_at                 timestamptz,
+    primary key (owner_ref, idempotency_key),
+    constraint repository_action_attempts_key_unique unique (idempotency_key),
+    constraint repository_action_attempts_owner_check
+        check (owner_ref ~ '^user:[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$'),
+    constraint repository_action_attempts_mode_check
+        check (mode in ('metadata', 'track', 'star')),
+    constraint repository_action_attempts_numeric_id_check
+        check (github_repository_numeric_id > 0),
+    constraint repository_action_attempts_fingerprint_check
+        check (jsonb_typeof(request_fingerprint) = 'object'),
+    constraint repository_action_attempts_result_check
+        check (result is null or jsonb_typeof(result) = 'object'),
+    constraint repository_action_attempts_terminal_check check (
+        (status = 'in_progress' and result is null and completed_at is null)
+        or (status = 'completed' and result is not null and completed_at is not null)
+    )
+);
+
 create table if not exists github_catalog.outbox_events (
     message_id   uuid primary key,
     subject      text not null,

@@ -13,6 +13,10 @@ const ENV_PREFIX: &str = "RATATOSKR__";
 pub struct Config {
     /// Operator listener configuration.
     pub admin: AdminConfig,
+    /// Host-local authenticated domain listener configuration.
+    pub api: ApiConfig,
+    /// GitHub provider endpoint configuration.
+    pub provider: ProviderConfig,
     /// Owned durable storage configuration.
     pub storage: StorageConfig,
     /// Credential encryption configuration.
@@ -30,6 +34,20 @@ pub struct Config {
 pub struct AdminConfig {
     /// Socket address for health, metrics, and version routes.
     pub listen_address: SocketAddr,
+}
+
+/// Loopback-only authenticated domain listener configuration.
+#[derive(Debug, Clone, Serialize)]
+pub struct ApiConfig {
+    /// Socket address for Edge-authenticated domain routes.
+    pub listen_address: SocketAddr,
+}
+
+/// Bounded provider endpoint configuration.
+#[derive(Debug, Clone, Serialize)]
+pub struct ProviderConfig {
+    /// HTTPS provider origin, or a numeric loopback HTTP origin for tests.
+    pub base_url: String,
 }
 
 /// `PostgreSQL` storage locations owned by this service.
@@ -293,9 +311,20 @@ impl Config {
             apply_entry(&mut config, key, value.as_ref())?;
         }
 
-        config.credentials.validate()?;
-        config.github_oauth.validate()?;
+        config.validate()?;
         Ok(config)
+    }
+
+    fn validate(&self) -> Result<(), ConfigError> {
+        self.credentials.validate()?;
+        self.github_oauth.validate()?;
+        if self.api.listen_address == self.admin.listen_address {
+            return Err(ConfigError::new(
+                "RATATOSKR__API__LISTEN_ADDRESS",
+                "must differ from the operator listener",
+            ));
+        }
+        validate_provider_base_url("RATATOSKR__PROVIDER__BASE_URL", &self.provider.base_url)
     }
 }
 
@@ -329,6 +358,24 @@ fn apply_entry(config: &mut Config, key: &str, value: &str) -> Result<(), Config
                 ));
             }
             config.admin.listen_address = address;
+        }
+        "RATATOSKR__API__LISTEN_ADDRESS" => {
+            let address = value
+                .parse::<SocketAddr>()
+                .map_err(|_| ConfigError::new(key, "must be a socket address"))?;
+            if !address.ip().is_loopback() || address.port() == 0 {
+                return Err(ConfigError::new(
+                    key,
+                    "must be a loopback address with a port",
+                ));
+            }
+            config.api.listen_address = address;
+        }
+        "RATATOSKR__PROVIDER__BASE_URL" => {
+            validate_provider_base_url(key, value)?;
+            value
+                .trim_end_matches('/')
+                .clone_into(&mut config.provider.base_url);
         }
         "RATATOSKR__STORAGE__DATABASE_URL" => {
             value
@@ -368,6 +415,32 @@ fn apply_entry(config: &mut Config, key: &str, value: &str) -> Result<(), Config
     Ok(())
 }
 
+fn validate_provider_base_url(key: &str, value: &str) -> Result<(), ConfigError> {
+    let parsed = reqwest::Url::parse(value)
+        .map_err(|_| ConfigError::new(key, "must be a bounded provider origin"))?;
+    let origin_only = parsed.username().is_empty()
+        && parsed.password().is_none()
+        && parsed.query().is_none()
+        && parsed.fragment().is_none()
+        && parsed.path() == "/";
+    let permitted_scheme = match parsed.scheme() {
+        "https" => parsed.host_str().is_some(),
+        "http" => parsed
+            .host_str()
+            .and_then(|host| host.parse::<IpAddr>().ok())
+            .is_some_and(|address| address.is_loopback()),
+        _ => false,
+    };
+    if origin_only && permitted_scheme {
+        Ok(())
+    } else {
+        Err(ConfigError::new(
+            key,
+            "must be an HTTPS origin or numeric loopback HTTP origin",
+        ))
+    }
+}
+
 fn parse_positive<T>(key: &str, value: &str) -> Result<T, ConfigError>
 where
     T: std::str::FromStr + Default + PartialOrd,
@@ -394,6 +467,12 @@ impl Default for Config {
         Self {
             admin: AdminConfig {
                 listen_address: SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), 9095),
+            },
+            api: ApiConfig {
+                listen_address: SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), 8092),
+            },
+            provider: ProviderConfig {
+                base_url: "https://api.github.com".to_owned(),
             },
             storage: StorageConfig {
                 database_url: "postgres://github:github@127.0.0.1:5435/github".to_owned(),

@@ -12,6 +12,11 @@ use axum::middleware::{self, Next};
 use axum::response::Response;
 use axum::routing::get;
 
+mod repository_action_attempts;
+mod repository_api;
+
+pub use repository_api::{RepositoryApiState, domain_router};
+
 const STARTING: u8 = 0;
 const READY: u8 = 1;
 const DRAINING: u8 = 2;

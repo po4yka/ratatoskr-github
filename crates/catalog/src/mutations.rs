@@ -248,6 +248,17 @@ pub enum MutationError {
     /// The database refused a read or the audit-trail write.
     #[error(transparent)]
     Persistence(#[from] PersistenceError),
+    /// The provider confirmed the requested write, but its local projection,
+    /// audit, or desired-policy publication could not be committed.
+    ///
+    /// Callers must preserve the confirmed provider outcome and must not
+    /// compensate the provider write merely because local persistence failed.
+    #[error("provider confirmed the mutation, but local persistence failed: {source}")]
+    ProviderConfirmedPersistence {
+        /// The local persistence failure after provider confirmation.
+        #[source]
+        source: PersistenceError,
+    },
 }
 
 /// The operation-kind label for the request's audit row.
@@ -517,6 +528,25 @@ async fn execute_star_write<G: MutationApi>(
         .await;
     }
 
+    persist_confirmed_star(runtime, repository, idempotency_key, direction)
+        .await
+        .map_err(|error| match error {
+            MutationError::Persistence(source)
+            | MutationError::ProviderConfirmedPersistence { source } => {
+                MutationError::ProviderConfirmedPersistence { source }
+            }
+        })
+}
+
+/// Persists the projection and audit only after GitHub has confirmed the
+/// requested star state. Keeping this boundary explicit lets callers retain
+/// provider truth when any later local step fails.
+async fn persist_confirmed_star<G: MutationApi>(
+    runtime: &MutationRuntime<'_, G>,
+    repository: RepositoryRef,
+    idempotency_key: String,
+    direction: StarDirection,
+) -> Result<MutationOutcome, MutationError> {
     let mut transaction = runtime
         .database
         .pool()

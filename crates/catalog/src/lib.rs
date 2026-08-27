@@ -45,8 +45,8 @@ pub use commands::{
     SyncCommandError, handle_sync_command,
 };
 pub use config::{
-    AdminConfig, Config, ConfigError, CredentialsConfig, GithubOAuthConfig, LegacyConfig, Limits,
-    OAuthAppCredentials, StorageConfig,
+    AdminConfig, ApiConfig, Config, ConfigError, CredentialsConfig, GithubOAuthConfig,
+    LegacyConfig, Limits, OAuthAppCredentials, ProviderConfig, StorageConfig,
 };
 pub use credentials::{
     CredentialError, CredentialKey, VerifiedGithubAccount, load_active_oauth, load_active_pat,
@@ -70,7 +70,9 @@ pub use metadata::{
     RepositoryAnalysisSource, apply_fresh_body, apply_fresh_source, apply_not_modified,
     store_readme,
 };
-pub use modes::{RequestedMode, SetModeRequest, set_repository_mode};
+pub use modes::{
+    RequestedMode, SetModeRequest, TrackOutcome, set_repository_mode, track_repository,
+};
 pub use mutations::{
     MutationContext, MutationError, MutationOutcome, MutationRequest, MutationSource,
     MutationStatus, RefusalReason, RepositoryRef, execute_batch, execute_mutation,

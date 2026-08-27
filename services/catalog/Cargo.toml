@@ -17,8 +17,14 @@ path = "src/main.rs"
 
 [dependencies]
 axum.workspace = true
+ratatoskr-error-contracts.workspace = true
 ratatoskr-github-catalog = { path = "../../crates/catalog" }
+ratatoskr-github-contracts.workspace = true
+ratatoskr-identifiers.workspace = true
 secrecy.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+sqlx.workspace = true
 thiserror.workspace = true
 tokio.workspace = true
 uuid.workspace = true
@@ -26,8 +32,8 @@ uuid.workspace = true
 [dev-dependencies]
 http-body-util.workspace = true
 ratatoskr-github-catalog = { path = "../../crates/catalog", features = ["test-support"] }
-sqlx.workspace = true
 tower.workspace = true
+wiremock.workspace = true
 
 [lints]
 workspace = true
