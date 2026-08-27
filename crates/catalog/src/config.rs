@@ -1,6 +1,7 @@
 use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 use std::{error, fmt};
 
+use secrecy::SecretString;
 use serde::Serialize;
 
 use crate::CredentialKey;
@@ -16,6 +17,8 @@ pub struct Config {
     pub storage: StorageConfig,
     /// Credential encryption configuration.
     pub credentials: CredentialsConfig,
+    /// GitHub OAuth application configuration.
+    pub github_oauth: GithubOAuthConfig,
     /// Ephemeral retired-source configuration used only by import commands.
     pub legacy: LegacyConfig,
     /// Resource and shutdown limits.
@@ -107,6 +110,87 @@ impl fmt::Debug for CredentialsConfig {
                 &self.encryption_key_hex.as_ref().map(|_| "[REDACTED]"),
             )
             .field("key_version", &self.key_version)
+            .finish()
+    }
+}
+
+/// Service-local GitHub OAuth application configuration.
+#[derive(Clone, Serialize)]
+pub struct GithubOAuthConfig {
+    /// Non-secret GitHub OAuth application client identifier.
+    pub client_id: Option<String>,
+    #[serde(skip_serializing)]
+    client_secret: Option<SecretString>,
+}
+
+impl GithubOAuthConfig {
+    /// Returns the configured OAuth application credentials when the feature is enabled.
+    #[must_use]
+    pub fn credentials(&self) -> Option<OAuthAppCredentials> {
+        match (&self.client_id, &self.client_secret) {
+            (Some(client_id), Some(client_secret)) => Some(OAuthAppCredentials {
+                client_id: client_id.clone(),
+                client_secret: client_secret.clone(),
+            }),
+            (None | Some(_), None) | (None, Some(_)) => None,
+        }
+    }
+
+    fn validate(&self) -> Result<(), ConfigError> {
+        match (&self.client_id, &self.client_secret) {
+            (None, None) => Ok(()),
+            (Some(client_id), Some(_)) if valid_oauth_client_id(client_id) => Ok(()),
+            (Some(_), Some(_)) => Err(ConfigError::new(
+                "RATATOSKR__GITHUB_OAUTH__CLIENT_ID",
+                "must use only ASCII letters, digits, dots, underscores, or hyphens",
+            )),
+            (Some(_), None) => Err(ConfigError::new(
+                "RATATOSKR__GITHUB_OAUTH__CLIENT_SECRET",
+                "must be configured with RATATOSKR__GITHUB_OAUTH__CLIENT_ID",
+            )),
+            (None, Some(_)) => Err(ConfigError::new(
+                "RATATOSKR__GITHUB_OAUTH__CLIENT_ID",
+                "must be configured with RATATOSKR__GITHUB_OAUTH__CLIENT_SECRET",
+            )),
+        }
+    }
+}
+
+impl fmt::Debug for GithubOAuthConfig {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("GithubOAuthConfig")
+            .field("client_id", &self.client_id)
+            .field(
+                "client_secret",
+                &self.client_secret.as_ref().map(|_| "[REDACTED]"),
+            )
+            .finish()
+    }
+}
+
+/// Redacting OAuth application credentials ready for a provider request.
+#[derive(Clone)]
+pub struct OAuthAppCredentials {
+    /// Non-secret GitHub OAuth application client identifier.
+    pub client_id: String,
+    client_secret: SecretString,
+}
+
+impl OAuthAppCredentials {
+    /// Returns the provider-authentication secret without serializing it.
+    #[must_use]
+    pub fn client_secret(&self) -> &SecretString {
+        &self.client_secret
+    }
+}
+
+impl fmt::Debug for OAuthAppCredentials {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("OAuthAppCredentials")
+            .field("client_id", &self.client_id)
+            .field("client_secret", &"[REDACTED]")
             .finish()
     }
 }
@@ -210,6 +294,7 @@ impl Config {
         }
 
         config.credentials.validate()?;
+        config.github_oauth.validate()?;
         Ok(config)
     }
 }
@@ -257,6 +342,12 @@ fn apply_entry(config: &mut Config, key: &str, value: &str) -> Result<(), Config
         "RATATOSKR__CREDENTIALS__KEY_VERSION" => {
             config.credentials.key_version = Some(value.to_owned());
         }
+        "RATATOSKR__GITHUB_OAUTH__CLIENT_ID" => {
+            config.github_oauth.client_id = Some(value.to_owned());
+        }
+        "RATATOSKR__GITHUB_OAUTH__CLIENT_SECRET" => {
+            config.github_oauth.client_secret = Some(SecretString::from(value.to_owned()));
+        }
         "RATATOSKR__LEGACY__SOURCE_DATABASE_URL" => {
             value
                 .parse::<sqlx::postgres::PgConnectOptions>()
@@ -290,6 +381,14 @@ where
     Ok(parsed)
 }
 
+fn valid_oauth_client_id(value: &str) -> bool {
+    !value.is_empty()
+        && value.len() <= 255
+        && value
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'.' | b'_' | b'-'))
+}
+
 impl Default for Config {
     fn default() -> Self {
         Self {
@@ -302,6 +401,10 @@ impl Default for Config {
             credentials: CredentialsConfig {
                 encryption_key_hex: None,
                 key_version: None,
+            },
+            github_oauth: GithubOAuthConfig {
+                client_id: None,
+                client_secret: None,
             },
             legacy: LegacyConfig {
                 source_database_url: None,

@@ -1,11 +1,15 @@
 //! Account re-registration and credential secrecy behavior.
 
+use ratatoskr_github_catalog::provider::ReqwestGithubApi;
 use ratatoskr_github_catalog::test_support::TestDatabase;
 use ratatoskr_github_catalog::{
-    CredentialKey, VerifiedGithubAccount, load_active_pat, register_pat,
+    Config, CredentialKey, VerifiedGithubAccount, load_active_pat, register_oauth, register_pat,
 };
 use secrecy::{ExposeSecret as _, SecretString};
+use serde_json::json;
 use uuid::Uuid;
+use wiremock::matchers::{basic_auth, body_json, header, method, path};
+use wiremock::{Mock, MockServer, ResponseTemplate};
 
 #[test]
 fn credential_key_debug_redacts_key_material() -> Result<(), Box<dyn std::error::Error>> {
@@ -127,5 +131,154 @@ async fn valid_pat_reconnects_only_the_matching_imported_account()
     assert_eq!(loaded.expose_secret(), "replacement-pat-value");
 
     database.cleanup().await?;
+    Ok(())
+}
+
+#[tokio::test]
+async fn pat_registration_records_pat_provenance() -> Result<(), Box<dyn std::error::Error>> {
+    let database = TestDatabase::create().await?;
+    let account_id = Uuid::now_v7();
+    sqlx::query(
+        "insert into github_catalog.github_accounts (account_id, owner_ref, status)
+         values ($1, 'pat-provenance-owner', 'reauthorization_required')",
+    )
+    .bind(account_id)
+    .execute(database.database.pool())
+    .await?;
+
+    let key = CredentialKey::from_hex(
+        "00112233445566778899aabbccddeeff00112233445566778899aabbccddeeff",
+        "key-2026-08",
+    )?;
+    register_pat(
+        &database.database,
+        account_id,
+        SecretString::from("replacement-pat-value"),
+        &key,
+        &VerifiedGithubAccount {
+            provider_user_id: 42,
+            login: "verified-login".to_owned(),
+            granted_scopes: vec!["repo".to_owned()],
+        },
+    )
+    .await?;
+
+    let provenance: Option<String> = sqlx::query_scalar(
+        "select to_jsonb(credential) ->> 'credential_kind'
+         from github_catalog.github_account_credentials credential
+         where credential.account_id = $1",
+    )
+    .bind(account_id)
+    .fetch_one(database.database.pool())
+    .await?;
+
+    assert_eq!(provenance.as_deref(), Some("pat"));
+
+    database.cleanup().await?;
+    Ok(())
+}
+
+#[tokio::test]
+async fn configured_oauth_credential_records_its_issuing_application()
+-> Result<(), Box<dyn std::error::Error>> {
+    let database = TestDatabase::create().await?;
+    let account_id = Uuid::now_v7();
+    sqlx::query(
+        "insert into github_catalog.github_accounts (account_id, owner_ref, status)
+         values ($1, 'oauth-provenance-owner', 'reauthorization_required')",
+    )
+    .bind(account_id)
+    .execute(database.database.pool())
+    .await?;
+
+    let configuration = Config::from_environment([
+        ("RATATOSKR__GITHUB_OAUTH__CLIENT_ID", "Iv1.configured-app"),
+        (
+            "RATATOSKR__GITHUB_OAUTH__CLIENT_SECRET",
+            "synthetic-oauth-client-secret",
+        ),
+    ])?;
+    let oauth_app = configuration.github_oauth.credentials().ok_or_else(|| {
+        std::io::Error::new(
+            std::io::ErrorKind::InvalidInput,
+            "configured OAuth app must expose credentials",
+        )
+    })?;
+    let key = CredentialKey::from_hex(
+        "00112233445566778899aabbccddeeff00112233445566778899aabbccddeeff",
+        "key-2026-08",
+    )?;
+    let registered = register_oauth(
+        &database.database,
+        account_id,
+        SecretString::from("oauth-access-token"),
+        &key,
+        &VerifiedGithubAccount {
+            provider_user_id: 42,
+            login: "verified-login".to_owned(),
+            granted_scopes: vec!["repo".to_owned()],
+        },
+        &oauth_app,
+    )
+    .await;
+
+    assert!(registered.is_ok(), "OAuth registration must succeed");
+    registered?;
+    let provenance: (Option<String>, Option<String>) = sqlx::query_as(
+        "select to_jsonb(credential) ->> 'credential_kind',
+                to_jsonb(credential) ->> 'oauth_client_id'
+         from github_catalog.github_account_credentials credential
+         where credential.account_id = $1",
+    )
+    .bind(account_id)
+    .fetch_one(database.database.pool())
+    .await?;
+    assert_eq!(provenance.0.as_deref(), Some("oauth"));
+    assert_eq!(provenance.1.as_deref(), Some("Iv1.configured-app"));
+
+    database.cleanup().await?;
+    Ok(())
+}
+
+#[tokio::test]
+async fn matching_oauth_credential_deletes_github_application_grant()
+-> Result<(), Box<dyn std::error::Error>> {
+    let server = MockServer::start().await;
+    Mock::given(method("DELETE"))
+        .and(path("/applications/Iv1.configured-app/grant"))
+        .and(basic_auth(
+            "Iv1.configured-app",
+            "synthetic-oauth-client-secret",
+        ))
+        .and(header("accept", "application/vnd.github+json"))
+        .and(body_json(json!({ "access_token": "oauth-access-token" })))
+        .respond_with(ResponseTemplate::new(204))
+        .expect(1)
+        .mount(&server)
+        .await;
+
+    let configuration = Config::from_environment([
+        ("RATATOSKR__GITHUB_OAUTH__CLIENT_ID", "Iv1.configured-app"),
+        (
+            "RATATOSKR__GITHUB_OAUTH__CLIENT_SECRET",
+            "synthetic-oauth-client-secret",
+        ),
+    ])?;
+    let oauth_app = configuration.github_oauth.credentials().ok_or_else(|| {
+        std::io::Error::new(
+            std::io::ErrorKind::InvalidInput,
+            "configured OAuth app must expose credentials",
+        )
+    })?;
+    let github = ReqwestGithubApi::for_base_url(&server.uri())?;
+    let revocation = github
+        .revoke_oauth_grant(&oauth_app, &SecretString::from("oauth-access-token"))
+        .await;
+
+    assert!(
+        revocation.is_ok(),
+        "a GitHub 204 must verify grant revocation"
+    );
+    server.verify().await;
     Ok(())
 }

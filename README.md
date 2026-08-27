@@ -285,7 +285,25 @@ Requirements:
 - rate-limit reset persistence;
 - bounded concurrency and conditional requests.
 
-A fine-grained token with minimal repository access is preferred where it satisfies the use case. OAuth device or web flows may be added behind the same account-connection boundary.
+A fine-grained token with minimal repository access is preferred where it satisfies the use case. OAuth credentials remain behind the same account-connection boundary.
+
+### OAuth grant-revocation configuration
+
+GitHub Catalog can revoke an OAuth application's grant during account erasure
+only when this service has both of the following deployment settings:
+
+```text
+RATATOSKR__GITHUB_OAUTH__CLIENT_ID=<GitHub OAuth app client ID>
+RATATOSKR__GITHUB_OAUTH__CLIENT_SECRET=<service secret reference>
+```
+
+Set both values or neither: partial configuration fails startup. The client ID
+is a non-secret application identifier; the secret reference must resolve only
+inside GitHub Catalog to `RATATOSKR__GITHUB_OAUTH__CLIENT_SECRET`. Do not place
+either setting in browser, Platform, event, telemetry, or user-token
+configuration. On an OAuth credential issued by another app, a PAT, a missing
+OAuth configuration, or a provider error, local erasure still proceeds and the
+acknowledgement truthfully reports incomplete external grant revocation.
 
 Telegram, Platform, Knowledge, and Vault never receive the plaintext GitHub token.
 

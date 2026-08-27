@@ -39,12 +39,21 @@ create unique index if not exists github_accounts_owner_provider_identity_key
 create table if not exists github_catalog.github_account_credentials (
     account_id      uuid primary key references github_catalog.github_accounts (account_id),
     key_version     text not null,
+    credential_kind text not null default 'pat',
+    oauth_client_id text,
     encrypted_token bytea not null,
     nonce           bytea not null,
     created_at      timestamptz not null default now(),
     updated_at      timestamptz not null default now(),
     constraint github_account_credentials_key_version_check
         check (key_version ~ '^[a-zA-Z0-9][a-zA-Z0-9._-]{0,63}$'),
+    constraint github_account_credentials_kind_check
+        check (credential_kind in ('pat', 'oauth')),
+    constraint github_account_credentials_oauth_provenance_check
+        check (
+            (credential_kind = 'pat' and oauth_client_id is null)
+            or (credential_kind = 'oauth' and oauth_client_id is not null)
+        ),
     constraint github_account_credentials_ciphertext_check
         check (octet_length(encrypted_token) > 16),
     constraint github_account_credentials_nonce_check

@@ -1,8 +1,10 @@
 //! Replacement-PAT identity verification.
 
+use secrecy::{ExposeSecret as _, SecretString};
 use serde::Deserialize;
 
 use super::{ProviderError, ReqwestGithubApi};
+use crate::OAuthAppCredentials;
 
 /// Identity and scopes verified from a replacement GitHub credential.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -22,6 +24,41 @@ struct AuthenticatedUserWire {
 }
 
 impl ReqwestGithubApi {
+    /// Revokes one user's grant for the configured OAuth application.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ProviderError`] when GitHub does not confirm revocation.
+    pub async fn revoke_oauth_grant(
+        &self,
+        oauth_app: &OAuthAppCredentials,
+        access_token: &SecretString,
+    ) -> Result<(), ProviderError> {
+        let response = self
+            .http
+            .delete(format!(
+                "{}/applications/{}/grant",
+                self.base_url, oauth_app.client_id
+            ))
+            .header(reqwest::header::ACCEPT, "application/vnd.github+json")
+            .header("X-GitHub-Api-Version", "2026-03-10")
+            .basic_auth(
+                &oauth_app.client_id,
+                Some(oauth_app.client_secret().expose_secret()),
+            )
+            .json(&serde_json::json!({ "access_token": access_token.expose_secret() }))
+            .send()
+            .await
+            .map_err(ProviderError::Transport)?;
+        if response.status() == reqwest::StatusCode::NO_CONTENT {
+            Ok(())
+        } else {
+            Err(ProviderError::UnexpectedStatus {
+                status: response.status().as_u16(),
+            })
+        }
+    }
+
     /// Verifies a replacement PAT and reads the provider identity and scopes.
     ///
     /// # Errors

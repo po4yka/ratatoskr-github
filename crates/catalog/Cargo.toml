@@ -14,6 +14,7 @@ ratatoskr-backup-contracts.workspace = true
 ratatoskr-event-envelope.workspace = true
 ratatoskr-github-contracts.workspace = true
 ratatoskr-identifiers.workspace = true
+ratatoskr-operation-contracts.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 secrecy.workspace = true
