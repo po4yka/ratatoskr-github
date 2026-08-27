@@ -97,9 +97,10 @@ async fn metadata_delta_queues_and_dispatches_one_analysis_request()
     let gateway = ReqwestGithubApi::for_base_url(&server.uri())?;
     let ledger = RateLimitLedger::new();
     let token = TokenRef::from_label("watch-account");
+    let analysis_owner = TenantRef::parse("user:018f0000-0000-7000-8000-000000000902")?;
     register_repository_analysis_watch(
         &database.database,
-        TenantRef::parse("user:018f0000-0000-7000-8000-000000000902")?,
+        analysis_owner,
         repository.repository_id,
     )
     .await?;
@@ -108,6 +109,7 @@ async fn metadata_delta_queues_and_dispatches_one_analysis_request()
         &gateway,
         &ledger,
         &token,
+        analysis_owner,
         "acme",
         "watched",
     )
@@ -136,7 +138,9 @@ async fn metadata_delta_queues_and_dispatches_one_analysis_request()
     )
     .fetch_one(database.database.pool())
     .await?;
-    assert_eq!(requested, 1);
+    // The fresh source revision publishes immediately with README evidence;
+    // the separately registered watch retains its paced policy command.
+    assert_eq!(requested, 2);
 
     server.verify().await;
     database.cleanup().await?;
