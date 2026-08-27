@@ -14,7 +14,10 @@ Live JetStream subscription is a later integration changeset once credential sto
 
 ## Outbound
 
-Repository/star/list/policy events, operation progress/results, Knowledge analysis requests, and Vault desired-target events.
+Repository/star/list/policy events, operation progress/results, Knowledge analysis requests, and Vault desired-target events. An enabled metadata-delta watch creates a paced
+`knowledge.repository_analysis.requested.v1` outbox payload with bounded attributes and explicit
+README absence; Catalog consumes matching `knowledge.repository_analysis.completed.v1` and
+`knowledge.repository_analysis.failed.v1` terminal facts through its idempotent inbox.
 
 ## Provider boundary
 
@@ -22,4 +25,4 @@ REST/GraphQL clients expose typed pagination, conditional request, rate-limit, r
 
 ## Rules
 
-Commands carry account/user/operation/idempotency. Full snapshot commits authority only after all pages validate. Mutations expose component results such as local catalog, provider star, list filing, and backup enrollment. Vault receives desired state without GitHub credentials. Knowledge receives README/content references, not tokens.
+Commands carry account/user/operation/idempotency. Full snapshot commits authority only after all pages validate. Mutations expose component results such as local catalog, provider star, list filing, and backup enrollment. Vault receives desired state without GitHub credentials. Knowledge receives README/content references, not tokens. Catalog does not apply Knowledge budgets or requeue decisions; `queued`/`pending` remain visible until a matching terminal fact resolves them.

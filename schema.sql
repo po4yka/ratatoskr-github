@@ -252,19 +252,92 @@ create table if not exists github_catalog.star_list_membership_observations (
 );
 
 create table if not exists github_catalog.repository_watches (
-    watch_id     uuid primary key,
-    repository_id uuid not null references github_catalog.repositories (repository_id),
-    trigger_type text not null,
-    enabled      boolean not null default true,
-    created_at   timestamptz not null default now(),
+    watch_id                      uuid primary key,
+    owner_ref                     text not null,
+    repository_id                 uuid not null references github_catalog.repositories (repository_id),
+    trigger_type                  text not null,
+    downstream_action             text not null,
+    enabled                       boolean not null default true,
+    last_evaluated_content_hash   text not null,
+    created_at                    timestamptz not null default now(),
+    updated_at                    timestamptz not null default now(),
+    constraint repository_watches_owner_ref_check
+        check (owner_ref ~ '^user:[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$'),
     constraint repository_watches_trigger_type_check check (trigger_type in (
-        'readme_changed',
-        'release_published',
-        'issue_opened',
-        'archived_or_deleted',
-        'visibility_changed',
-        'activity_threshold'
-    ))
+        'metadata_changed'
+    )),
+    constraint repository_watches_action_check check (downstream_action = 'repository_analysis'),
+    constraint repository_watches_identity_key
+        unique (owner_ref, repository_id, trigger_type, downstream_action)
+);
+
+create table if not exists github_catalog.repository_analysis_requests (
+    request_id                      uuid primary key,
+    watch_id                        uuid not null references github_catalog.repository_watches (watch_id),
+    owner_ref                       text not null,
+    repository_id                   uuid not null references github_catalog.repositories (repository_id),
+    github_repository_numeric_id    bigint not null,
+    source_revision                 jsonb not null,
+    repository_attributes           jsonb not null,
+    request_payload                 jsonb not null,
+    attributes_digest_hex           text not null,
+    idempotency_digest_hex          text not null,
+    requested_contract              text not null,
+    status                          text not null default 'queued',
+    not_before                      timestamptz not null,
+    outbox_message_id               uuid unique,
+    analysis_result_ref             text,
+    failure_code                    text,
+    retryable                       boolean,
+    terminal_at                     timestamptz,
+    created_at                      timestamptz not null default now(),
+    constraint repository_analysis_requests_owner_ref_check
+        check (owner_ref ~ '^user:[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$'),
+    constraint repository_analysis_requests_numeric_id_check check (github_repository_numeric_id > 0),
+    constraint repository_analysis_requests_attributes_digest_check
+        check (attributes_digest_hex ~ '^[0-9a-f]{64}$'),
+    constraint repository_analysis_requests_idempotency_digest_check
+        check (idempotency_digest_hex ~ '^[0-9a-f]{64}$'),
+    constraint repository_analysis_requests_contract_check
+        check (requested_contract = 'repository_analysis'),
+    constraint repository_analysis_requests_json_check
+        check (jsonb_typeof(source_revision) = 'object'
+            and jsonb_typeof(repository_attributes) = 'object'
+            and jsonb_typeof(request_payload) = 'object'),
+    constraint repository_analysis_requests_status_check
+        check (status in ('queued', 'pending', 'completed', 'failed')),
+    constraint repository_analysis_requests_terminal_check check (
+        (status = 'queued' and outbox_message_id is null and analysis_result_ref is null
+            and failure_code is null and retryable is null and terminal_at is null)
+        or (status = 'pending' and outbox_message_id is not null and analysis_result_ref is null
+            and failure_code is null and retryable is null and terminal_at is null)
+        or (status = 'completed' and outbox_message_id is not null and analysis_result_ref is not null
+            and failure_code is null and retryable is null and terminal_at is not null)
+        or (status = 'failed' and outbox_message_id is not null and analysis_result_ref is null
+            and failure_code is not null and retryable is not null and terminal_at is not null)
+    ),
+    constraint repository_analysis_requests_deduplication_key
+        unique (watch_id, attributes_digest_hex, requested_contract)
+);
+
+create index if not exists repository_analysis_requests_pending_idx
+    on github_catalog.repository_analysis_requests (not_before, request_id)
+    where status = 'queued';
+
+create table if not exists github_catalog.repository_analysis_dispatch_cursor (
+    scope          text primary key check (scope = 'repository_analysis'),
+    next_not_before timestamptz not null
+);
+
+create table if not exists github_catalog.repository_analysis_links (
+    owner_ref            text not null,
+    repository_id        uuid not null references github_catalog.repositories (repository_id),
+    request_id           uuid not null unique references github_catalog.repository_analysis_requests (request_id),
+    analysis_result_ref  text not null,
+    completed_at         timestamptz not null,
+    primary key (owner_ref, repository_id),
+    constraint repository_analysis_links_owner_ref_check
+        check (owner_ref ~ '^user:[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$')
 );
 
 -- Desired backup policy only: this context never owns physical backup state.
@@ -387,7 +460,9 @@ create table if not exists github_catalog.inbox_events (
         'github.star.removed.v1',
         'github.backup_policy.changed.v1',
         'evt.vault.backup_policy.acknowledged.v1',
-        'knowledge.repository_analysis.requested.v1'
+        'knowledge.repository_analysis.requested.v1',
+        'knowledge.repository_analysis.completed.v1',
+        'knowledge.repository_analysis.failed.v1'
     )),
     constraint inbox_payload_is_object check (jsonb_typeof(payload) = 'object')
 );

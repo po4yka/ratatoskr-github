@@ -9,7 +9,10 @@
 - **Star list:** native provider collection and memberships.
 - **Repository mode:** whose decision governs a catalog entry: `auto` (star-driven presence), `tracked` (explicitly kept without a star), or `ignored` (deliberately excluded); unclassified means known but never classified.
 - **Mutation audit:** append-only record of every provider write attempt and mode transition - who confirmed it, through which calling source, what was targeted, how it ended - keyed by idempotency so retries converge on one outcome.
-- **Watch rule:** monitored repository policy.
+- **Watch rule:** user-owned enabled/paused metadata-delta policy for one repository. It records the
+  last evaluated metadata checkpoint and names `repository_analysis` as its downstream action.
+- **Repository analysis request:** Catalog-owned outstanding-work record. `queued` and `pending` are
+  visible still-indexing states; only Knowledge can resolve it with a matching terminal fact.
 - **Backup policy:** desired Vault target, LFS/auxiliary options, retention, pinning.
 
 ## Invariants
@@ -22,3 +25,7 @@
 6. Every external write has consent, audit, and idempotency.
 7. Synchronization promotes only unclassified repositories to `auto`; explicit modes are never overridden by sync evidence.
 8. A repository cannot be `ignored` while starred, and starring cannot bypass `ignored`.
+9. A watch's current checkpoint establishes its registration baseline; the same immutable revision
+   can create at most one request for that watch.
+10. Catalog sends only bounded repository metadata and an explicit README absence state to Knowledge;
+    it never makes an LLM, budget, or retry decision.

@@ -26,6 +26,7 @@ pub mod rate_limit;
 mod snapshot;
 mod star_lists;
 mod telemetry;
+mod watches;
 
 #[cfg(feature = "test-support")]
 pub mod test_support;
@@ -59,3 +60,10 @@ pub use star_lists::{
     current_star_lists, run_star_list_snapshot,
 };
 pub use telemetry::{TelemetryError, init_telemetry};
+pub use watches::{
+    AnalysisDispatch, AnalysisRequestState, RepositoryAnalysisRequestStatus, TerminalFactOutcome,
+    WatchError, WatchEvaluation, WatchRegistration, consume_repository_analysis_completed,
+    consume_repository_analysis_failed, dispatch_due_repository_analysis,
+    evaluate_metadata_watches, register_repository_analysis_watch,
+    repository_analysis_request_state, set_repository_analysis_watch_enabled,
+};

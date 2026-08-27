@@ -10,6 +10,7 @@ use crate::identity::{AliasKind, apply_alias_observation, resolve_alias, upsert_
 use crate::metadata::{apply_fresh_body, apply_not_modified};
 use crate::provider::OwnerName;
 use crate::rate_limit::{AcquireError, RateLimitHeaders, RateLimitLedger, TokenRef};
+use crate::watches::{WatchError, evaluate_metadata_watches};
 
 /// What one observe operation established.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -47,6 +48,9 @@ pub enum ObserveError {
     /// Metadata or lookup persistence failed.
     #[error(transparent)]
     Persistence(#[from] crate::database::PersistenceError),
+    /// A metadata delta could not be represented or queued for an enabled watch.
+    #[error(transparent)]
+    Watch(#[from] WatchError),
     /// The provider exchange failed or was unclassifiable.
     #[error(transparent)]
     Provider(#[from] crate::provider::ProviderError),
@@ -129,6 +133,13 @@ where
                 identity.repository_id,
                 &fresh.body,
                 fresh.etag.as_deref(),
+            )
+            .await?;
+            evaluate_metadata_watches(
+                database,
+                identity.repository_id,
+                &fresh.body,
+                time::OffsetDateTime::now_utc(),
             )
             .await?;
             Ok(ObserveOutcome::Observed {

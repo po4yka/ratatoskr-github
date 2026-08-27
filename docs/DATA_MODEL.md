@@ -22,6 +22,13 @@ Native star-list snapshots (item 6) extend the schema in place as a peer authori
 
 Repository modes and mutations (item 7) extend the schema in place: `repositories.mode` carries the `auto`/`tracked`/`ignored` vocabulary (null is unclassified), `github_accounts.granted_scopes` records observed provider scopes for capability enforcement, and `mutation_audit` is the append-only trail of every mode transition and provider mutation attempt - principal, calling source, target, outcome, detail, idempotency key - where only successful outcomes claim a key (partial unique index), failures never consume one, and refusals keep their account claim without a foreign key because the trail records claims rather than vouching for them.
 
+Watches and Knowledge requests (item 9) replace the placeholder `repository_watches` with a
+user-scoped `metadata_changed` policy, downstream action, enabled/paused state, and metadata-hash
+checkpoint. `repository_analysis_requests` stores the immutable typed payload and its SHA-256
+deduplication identity in `queued`, `pending`, `completed`, or `failed` state. A singleton dispatch
+cursor paces only Catalog outbox delivery; it is not a Knowledge budget. `repository_analysis_links`
+projects a matching completion's opaque result reference back to `(owner_ref, repository_id)`.
+
 ## Constraints
 
 Repository provider ID is unique. Credentials are encrypted and excluded from events/logs. A snapshot becomes authoritative atomically only after complete enumeration. Observed timestamps are named honestly. Desired policy is versioned and distinct from Vault actual status. Cross-schema writes/foreign keys are forbidden.

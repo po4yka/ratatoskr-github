@@ -1389,7 +1389,7 @@ dependencies = [
 [[package]]
 name = "ratatoskr-backup-contracts"
 version = "0.1.0"
-source = "git+https://github.com/po4yka/ratatoskr-contracts.git?rev=0d6ddfb475fd47a153a03a69222a5a27cc48e067#0d6ddfb475fd47a153a03a69222a5a27cc48e067"
+source = "git+https://github.com/po4yka/ratatoskr-contracts.git?rev=b53fd76dce2a9e54de88d6a751bf22f3f4244fa3#b53fd76dce2a9e54de88d6a751bf22f3f4244fa3"
 dependencies = [
  "ratatoskr-event-envelope",
  "ratatoskr-identifiers",
@@ -1402,7 +1402,7 @@ dependencies = [
 [[package]]
 name = "ratatoskr-event-envelope"
 version = "0.1.0"
-source = "git+https://github.com/po4yka/ratatoskr-contracts.git?rev=0d6ddfb475fd47a153a03a69222a5a27cc48e067#0d6ddfb475fd47a153a03a69222a5a27cc48e067"
+source = "git+https://github.com/po4yka/ratatoskr-contracts.git?rev=b53fd76dce2a9e54de88d6a751bf22f3f4244fa3#b53fd76dce2a9e54de88d6a751bf22f3f4244fa3"
 dependencies = [
  "jiff",
  "ratatoskr-identifiers",
@@ -1421,10 +1421,12 @@ dependencies = [
  "ratatoskr-backup-contracts",
  "ratatoskr-event-envelope",
  "ratatoskr-github-catalog",
+ "ratatoskr-github-contracts",
  "ratatoskr-identifiers",
  "reqwest",
  "serde",
  "serde_json",
+ "sha2",
  "sqlx",
  "thiserror",
  "time",
@@ -1449,9 +1451,21 @@ dependencies = [
 ]
 
 [[package]]
+name = "ratatoskr-github-contracts"
+version = "0.1.0"
+source = "git+https://github.com/po4yka/ratatoskr-contracts.git?rev=b53fd76dce2a9e54de88d6a751bf22f3f4244fa3#b53fd76dce2a9e54de88d6a751bf22f3f4244fa3"
+dependencies = [
+ "ratatoskr-event-envelope",
+ "ratatoskr-identifiers",
+ "regex",
+ "schemars",
+ "serde",
+]
+
+[[package]]
 name = "ratatoskr-identifiers"
 version = "0.1.0"
-source = "git+https://github.com/po4yka/ratatoskr-contracts.git?rev=0d6ddfb475fd47a153a03a69222a5a27cc48e067#0d6ddfb475fd47a153a03a69222a5a27cc48e067"
+source = "git+https://github.com/po4yka/ratatoskr-contracts.git?rev=b53fd76dce2a9e54de88d6a751bf22f3f4244fa3#b53fd76dce2a9e54de88d6a751bf22f3f4244fa3"
 dependencies = [
  "jiff",
  "regex",

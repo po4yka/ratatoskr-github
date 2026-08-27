@@ -8,7 +8,7 @@
 6. Implement native star-list snapshots.
 7. Add repository modes and idempotent star/list mutations with partial success.
 8. Publish versioned desired backup policy to Vault.
-9. Add watches and Knowledge analysis requests.
+9. Add metadata-delta watches and paced Knowledge analysis requests. *(implemented)*
 10. Import legacy data, run shadow sync, then cut over reads and writes.
 
 Definition of Done: no false removals, credentials/scopes secure, rate limits respected, mutations
