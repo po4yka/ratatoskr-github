@@ -28,19 +28,19 @@ When the provider reports that stored metadata is unmodified, the catalog SHALL 
 - **WHEN** a repository with a stored validator is refreshed
 - **THEN** the outgoing request presents that validator so the provider can answer not modified
 
-### Requirement: Changed payload updates projection and appends a revision
+### Requirement: Changed source evidence updates projection and appends a revision
 
-The catalog SHALL update the projection when an observed body differs from the current revision and SHALL append exactly one new raw revision per distinct observed content.
+The catalog SHALL conditionally acquire the bounded README representation after a fresh metadata response, SHALL preserve permitted README bytes through an immutable `BlobRef`, and SHALL calculate a SHA-256 combined source identity from normalized metadata and the README state. It SHALL update the projection when that source identity differs, SHALL append exactly one source revision per distinct identity, and SHALL atomically append one corresponding `knowledge.repository_analysis.requested.v1` outbox command carrying the published typed repository-analysis request. README bytes and credentials MUST NOT be carried in the command.
 
-#### Scenario: Changed metadata produces a new revision
+#### Scenario: Changed metadata or README produces a new revision
 
-- **WHEN** a refreshed body differs in any projected field from the current revision
-- **THEN** the projection reflects the new values and the revision history grows by exactly one entry carrying the new raw payload
+- **WHEN** fresh normalized metadata or the immutable README state differs from the current source revision
+- **THEN** the projection reflects the metadata values, the revision history grows by exactly one entry carrying the source evidence, and one corresponding repository-analysis request is committed
 
-#### Scenario: Unchanged body does not duplicate revisions
+#### Scenario: Unchanged metadata and README do not duplicate revisions
 
-- **WHEN** a refreshed 200 response carries content identical to the current revision
-- **THEN** the projection stays correct and the revision count does not grow
+- **WHEN** a refreshed 200 response carries metadata and README evidence identical to the current source revision, or the README conditional request returns `304 Not Modified`
+- **THEN** the projection stays correct, the revision count does not grow, and no repository-analysis request is appended
 
 ### Requirement: Bounded revision history
 

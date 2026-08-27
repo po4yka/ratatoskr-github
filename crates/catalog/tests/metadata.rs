@@ -79,6 +79,38 @@ async fn first_metadata_observation_creates_projection_and_revision()
     Ok(())
 }
 
+/// Cross-service source identity must use the published SHA-256 shape rather than `PostgreSQL`'s
+/// legacy MD5 helper, so a later README reference can be bound to the same immutable revision.
+#[tokio::test]
+async fn fresh_metadata_uses_sha256_revision_identity() -> TestResult<()> {
+    let database = TestDatabase::create().await?;
+    let repository =
+        ratatoskr_github_catalog::upsert_repository(&database.database, 300_000_299).await?;
+
+    apply_fresh_body(
+        &database.database,
+        repository.repository_id,
+        &body(300_000_299, "acme/widgets", 42),
+        None,
+    )
+    .await?;
+
+    let content_hash: String = sqlx::query_scalar(
+        "select content_hash from github_catalog.repository_metadata where repository_id = $1",
+    )
+    .bind(repository.repository_id)
+    .fetch_one(database.database.pool())
+    .await?;
+    assert_eq!(
+        content_hash.len(),
+        64,
+        "the immutable source identity must be a full SHA-256 hex digest"
+    );
+
+    database.cleanup().await?;
+    Ok(())
+}
+
 #[tokio::test]
 async fn not_modified_preserves_previous_metadata() -> Result<(), Box<dyn std::error::Error>> {
     use ratatoskr_github_catalog::apply_not_modified;

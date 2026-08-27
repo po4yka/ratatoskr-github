@@ -2,7 +2,8 @@
 
 use ratatoskr_github_catalog::provider::ReqwestGithubApi;
 use ratatoskr_github_catalog::provider::{
-    FetchOutcome, FreshRepository, GithubApi, OwnerName, ProviderRepositoryBody,
+    FetchOutcome, FreshReadme, FreshRepository, GithubApi, OwnerName, ProviderRepositoryBody,
+    ReadmeFetchOutcome,
 };
 use wiremock::matchers::{header, method, path, query_param};
 use wiremock::{Mock, MockServer, ResponseTemplate};
@@ -69,6 +70,49 @@ async fn conditional_request_sends_if_none_match_and_short_circuits_on_304()
         "a 304 must short-circuit without a payload"
     );
 
+    server.verify().await;
+    Ok(())
+}
+
+/// README acquisition uses GitHub's raw representation, retains its validator, and bounds what
+/// can subsequently be placed into an immutable source revision.
+#[tokio::test]
+async fn conditional_readme_request_returns_bounded_raw_bytes()
+-> Result<(), Box<dyn std::error::Error>> {
+    let server = MockServer::start().await;
+    let readme_path = "/repos/acme/widgets/readme";
+    Mock::given(method("GET"))
+        .and(path(readme_path))
+        .and(header("accept", "application/vnd.github.raw+json"))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .set_body_string("# Widget\n")
+                .insert_header("etag", r#"W/"readme-v1""#),
+        )
+        .up_to_n_times(1)
+        .mount(&server)
+        .await;
+    Mock::given(method("GET"))
+        .and(path(readme_path))
+        .and(header("if-none-match", r#"W/"readme-v1""#))
+        .respond_with(ResponseTemplate::new(304))
+        .expect(1)
+        .mount(&server)
+        .await;
+
+    let gateway = ReqwestGithubApi::for_base_url(&server.uri())?;
+    let first = gateway.fetch_readme(None, "acme", "widgets", None).await?;
+    assert_eq!(
+        first.outcome,
+        ReadmeFetchOutcome::Fresh(FreshReadme {
+            bytes: b"# Widget\n".to_vec(),
+            etag: Some(r#"W/"readme-v1""#.to_owned()),
+        })
+    );
+    let second = gateway
+        .fetch_readme(None, "acme", "widgets", Some(r#"W/"readme-v1""#))
+        .await?;
+    assert_eq!(second.outcome, ReadmeFetchOutcome::NotModified);
     server.verify().await;
     Ok(())
 }

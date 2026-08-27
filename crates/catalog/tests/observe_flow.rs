@@ -5,6 +5,7 @@ use ratatoskr_github_catalog::provider::ReqwestGithubApi;
 use ratatoskr_github_catalog::rate_limit::{RateLimitLedger, TokenRef};
 use ratatoskr_github_catalog::test_support::TestDatabase;
 use ratatoskr_github_catalog::{ObserveOutcome, observe_repository};
+use ratatoskr_identifiers::TenantRef;
 use wiremock::matchers::{header, method, path};
 use wiremock::{Mock, MockServer, ResponseTemplate};
 
@@ -28,6 +29,10 @@ fn rate_headers(remaining: &str) -> ResponseTemplate {
 }
 
 #[tokio::test]
+#[allow(
+    clippy::too_many_lines,
+    reason = "the single wiremock scenario proves metadata, README acquisition, and replay together"
+)]
 async fn observe_repository_end_to_end_via_wiremock() -> Result<(), Box<dyn std::error::Error>> {
     let database = TestDatabase::create().await?;
     let server = MockServer::start().await;
@@ -40,6 +45,16 @@ async fn observe_repository_end_to_end_via_wiremock() -> Result<(), Box<dyn std:
                 .insert_header("etag", r#"W/"v1""#),
         )
         .up_to_n_times(1)
+        .mount(&server)
+        .await;
+    Mock::given(method("GET"))
+        .and(path("/repos/acme/widgets/readme"))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .set_body_string("# Widgets\n")
+                .insert_header("etag", r#"W/"readme-v1""#),
+        )
+        .expect(1)
         .mount(&server)
         .await;
     Mock::given(method("GET"))
@@ -64,6 +79,7 @@ async fn observe_repository_end_to_end_via_wiremock() -> Result<(), Box<dyn std:
         &gateway,
         &ledger,
         &token,
+        TenantRef::parse("user:018f0000-0000-7000-8000-000000000005")?,
         "acme",
         "widgets",
     )
@@ -86,6 +102,23 @@ async fn observe_repository_end_to_end_via_wiremock() -> Result<(), Box<dyn std:
     .fetch_one(database.database.pool())
     .await?;
     assert_eq!(revisions, 1);
+    let request_payload: serde_json::Value = sqlx::query_scalar(
+        "select payload from github_catalog.outbox_events
+         where subject = 'knowledge.repository_analysis.requested.v1'",
+    )
+    .fetch_one(database.database.pool())
+    .await?;
+    let request: ratatoskr_github_contracts::RepositoryAnalysisRequested =
+        serde_json::from_value(request_payload.clone())?;
+    assert_eq!(request.repository_id.to_string(), repository_id.to_string());
+    assert!(
+        request_payload.to_string().contains("content_ref"),
+        "the command carries a BlobRef, not README bytes"
+    );
+    assert!(
+        !request_payload.to_string().contains("Widgets"),
+        "README body bytes must stay inside the Catalog evidence boundary"
+    );
     assert_eq!(
         ledger.remaining(&token),
         Some(4999),
@@ -97,6 +130,7 @@ async fn observe_repository_end_to_end_via_wiremock() -> Result<(), Box<dyn std:
         &gateway,
         &ledger,
         &token,
+        TenantRef::parse("user:018f0000-0000-7000-8000-000000000005")?,
         "acme",
         "widgets",
     )
@@ -113,6 +147,13 @@ async fn observe_repository_end_to_end_via_wiremock() -> Result<(), Box<dyn std:
     .fetch_one(database.database.pool())
     .await?;
     assert_eq!(revisions_after, 1);
+    let requests_after_redelivery: i64 = sqlx::query_scalar(
+        "select count(*) from github_catalog.outbox_events
+         where subject = 'knowledge.repository_analysis.requested.v1'",
+    )
+    .fetch_one(database.database.pool())
+    .await?;
+    assert_eq!(requests_after_redelivery, 1);
     assert_eq!(ledger.remaining(&token), Some(4998));
 
     server.verify().await;
