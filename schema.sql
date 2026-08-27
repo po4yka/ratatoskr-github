@@ -76,9 +76,13 @@ create table if not exists github_catalog.repository_metadata (
     default_branch   text,
     pushed_at        timestamptz,
     provider_etag    text,
+    readme_etag      text,
+    readme_revision  jsonb,
     content_hash     text not null,
     fetched_at       timestamptz not null,
-    constraint repository_metadata_topics_is_array check (jsonb_typeof(topics) = 'array')
+    constraint repository_metadata_topics_is_array check (jsonb_typeof(topics) = 'array'),
+    constraint repository_metadata_readme_revision_is_object
+        check (readme_revision is null or jsonb_typeof(readme_revision) = 'object')
 );
 
 create table if not exists github_catalog.repository_metadata_revisions (
@@ -92,6 +96,39 @@ create table if not exists github_catalog.repository_metadata_revisions (
 
 create index if not exists repository_metadata_revisions_repo_observed_idx
     on github_catalog.repository_metadata_revisions (repository_id, observed_at);
+
+-- Immutable README evidence is addressed by the SHA-256 digest of the exact raw bytes.  The
+-- analysis event carries only a contract `BlobRef`; bytes remain in the Catalog-owned boundary.
+create table if not exists github_catalog.repository_readme_blobs (
+    content_digest text primary key,
+    bytes bytea not null,
+    media_type text not null default 'text/markdown',
+    length_bytes bigint not null,
+    stored_at timestamptz not null default now(),
+    constraint repository_readme_blobs_digest_check
+        check (content_digest ~ '^[0-9a-f]{64}$'),
+    constraint repository_readme_blobs_length_check
+        check (length_bytes >= 0),
+    constraint repository_readme_blobs_length_matches_bytes
+        check (length_bytes = octet_length(bytes)),
+    constraint repository_readme_blobs_media_type_check
+        check (media_type = 'text/markdown')
+);
+
+-- One immutable analysis command per combined metadata and README input.  The unique source
+-- digest is the outbox replay boundary; the command payload is retained verbatim for recovery.
+create table if not exists github_catalog.repository_analysis_publications (
+    repository_id uuid not null references github_catalog.repositories (repository_id),
+    source_digest text not null,
+    message_id uuid not null unique,
+    payload jsonb not null,
+    created_at timestamptz not null default now(),
+    primary key (repository_id, source_digest),
+    constraint repository_analysis_publications_digest_check
+        check (source_digest ~ '^[0-9a-f]{64}$'),
+    constraint repository_analysis_publications_payload_object_check
+        check (jsonb_typeof(payload) = 'object')
+);
 
 create table if not exists github_catalog.sync_runs (
     sync_run_id    uuid primary key,

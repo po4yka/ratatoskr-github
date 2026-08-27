@@ -47,7 +47,11 @@ pub use identity::{
     resolve_alias, upsert_repository,
 };
 pub use incremental::{IncrementalScanError, IncrementalScanOutcome, run_incremental_scan};
-pub use metadata::{AppliedOutcome, REVISION_HISTORY_LIMIT, apply_fresh_body, apply_not_modified};
+pub use metadata::{
+    AppliedOutcome, REVISION_HISTORY_LIMIT, ReadmeBlobError, RepositoryAnalysisPublicationError,
+    RepositoryAnalysisSource, apply_fresh_body, apply_fresh_source, apply_not_modified,
+    store_readme,
+};
 pub use modes::{RequestedMode, SetModeRequest, set_repository_mode};
 pub use mutations::{
     MutationContext, MutationError, MutationOutcome, MutationRequest, MutationSource,

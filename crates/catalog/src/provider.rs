@@ -1,7 +1,5 @@
-//! GitHub REST provider access behind a testable seam.
-//!
-//! Provider response types stay inside this adapter boundary and never leak
-//! into domain state unnormalized.
+//! GitHub REST provider access behind a testable seam. Provider response types stay inside this
+//! adapter boundary and never leak into domain state unnormalized.
 
 use serde::{Deserialize, Serialize};
 
@@ -10,10 +8,11 @@ use crate::rate_limit::RateLimitHeaders;
 /// Fixed page size for starred-listing enumeration.
 const STARRED_PAGE_SIZE: u32 = 100;
 
-/// The one GraphQL document star-list enumeration issues: the authenticated
-/// user's lists with their repository memberships inline, plus the reply's
-/// rate-limit accounting. Field names follow the public dotcom schema. The
-/// inline `100`s are the provider's maximum connection page size.
+/// Largest README body the Catalog may acquire for analysis input.
+pub const README_MAX_BYTES: usize = 1_048_576;
+
+/// The GraphQL document for authenticated user lists with inline memberships and rate accounting.
+/// Field names follow the public dotcom schema; `100` is the maximum connection page size.
 const USER_LISTS_QUERY: &str = "query($after: String) { viewer { \
 lists(first: 100, after: $after) { pageInfo { hasNextPage endCursor } \
 edges { node { id name items(first: 100) { pageInfo { hasNextPage } \
@@ -54,13 +53,43 @@ pub struct FreshRepository {
     pub rename_evidence: Option<RenameEvidence>,
 }
 
-/// One provider reply: the fetch outcome plus the response's rate-limit
-/// headers for shared budget accounting.
+/// One provider reply: the fetch outcome and response rate-limit headers for shared accounting.
 #[derive(Debug, Clone, PartialEq)]
 pub struct GatewayReply {
     /// What the fetch established.
     pub outcome: FetchOutcome,
     /// Rate-limit headers from the same response.
+    pub rate_limit: RateLimitHeaders,
+}
+
+/// One successful conditional README fetch.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct FreshReadme {
+    /// Exact raw README bytes, bounded by [`README_MAX_BYTES`].
+    pub bytes: Vec<u8>,
+    /// Validator to use for the next conditional README fetch.
+    pub etag: Option<String>,
+}
+
+/// Outcome of fetching the README representation of a repository.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ReadmeFetchOutcome {
+    /// GitHub returned permitted README bytes.
+    Fresh(FreshReadme),
+    /// GitHub confirmed the stored README validator.
+    NotModified,
+    /// No README is available at this repository revision.
+    NotFound,
+    /// The credential may read metadata but not the README representation.
+    NotAuthorized,
+}
+
+/// README result plus the response rate-limit evidence.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ReadmeReply {
+    /// What this request established about the README.
+    pub outcome: ReadmeFetchOutcome,
+    /// Rate-limit evidence from the same response.
     pub rate_limit: RateLimitHeaders,
 }
 
@@ -78,8 +107,7 @@ pub enum FetchOutcome {
     },
 }
 
-/// One entry of the starred-repository listing: when the star was made and
-/// the repository payload itself.
+/// One starred-listing entry: its observation time and repository payload.
 #[derive(Debug, Clone, PartialEq)]
 pub struct StarredItem {
     /// The provider `starred_at` timestamp as supplied by the listing.
@@ -155,6 +183,9 @@ pub enum ProviderError {
     /// The token lacks access to the repository.
     #[error("access to the repository was denied")]
     Unauthorized,
+    /// The bounded README representation exceeds the analysis acquisition limit.
+    #[error("the repository README exceeds the permitted acquisition size")]
+    ContentTooLarge,
     /// The transport or protocol failed before a classification was possible.
     #[error("the provider exchange failed: {0}")]
     Transport(#[source] reqwest::Error),
@@ -222,6 +253,19 @@ pub trait GithubApi {
         name: &str,
         etag: Option<&str>,
     ) -> impl std::future::Future<Output = Result<GatewayReply, ProviderError>> + Send;
+
+    /// Fetches a repository README conditionally as raw bytes.
+    ///
+    /// # Errors
+    ///
+    /// Returns a classified failure for transport, excess-size, or unrecognised provider replies.
+    fn fetch_readme(
+        &self,
+        token: Option<&str>,
+        owner: &str,
+        name: &str,
+        etag: Option<&str>,
+    ) -> impl std::future::Future<Output = Result<ReadmeReply, ProviderError>> + Send;
 
     /// Fetches one page of the authenticated account's starred-repository
     /// listing. Pages are numbered from one; an empty page terminates
@@ -577,6 +621,65 @@ impl GithubApi for ReqwestGithubApi {
             }
         };
         Ok(GatewayReply {
+            outcome,
+            rate_limit,
+        })
+    }
+
+    async fn fetch_readme(
+        &self,
+        token: Option<&str>,
+        owner: &str,
+        name: &str,
+        etag: Option<&str>,
+    ) -> Result<ReadmeReply, ProviderError> {
+        let url = format!("{}/repos/{owner}/{name}/readme", self.base_url);
+        let mut request = self
+            .http
+            .get(url)
+            .header(reqwest::header::ACCEPT, "application/vnd.github.raw+json");
+        if let Some(token) = token {
+            request = request.bearer_auth(token);
+        }
+        if let Some(etag) = etag {
+            request = request.header(reqwest::header::IF_NONE_MATCH, etag);
+        }
+        let response = request.send().await.map_err(ProviderError::Transport)?;
+        let rate_limit = rate_headers_from(response.headers());
+        let outcome = match response.status() {
+            reqwest::StatusCode::OK => {
+                let etag = response
+                    .headers()
+                    .get(reqwest::header::ETAG)
+                    .and_then(|value| value.to_str().ok())
+                    .map(str::to_owned);
+                let announced_length = response
+                    .content_length()
+                    .and_then(|length| usize::try_from(length).ok());
+                if announced_length.is_some_and(|length| length > README_MAX_BYTES) {
+                    return Err(ProviderError::ContentTooLarge);
+                }
+                let bytes = response.bytes().await.map_err(ProviderError::Transport)?;
+                if bytes.len() > README_MAX_BYTES {
+                    return Err(ProviderError::ContentTooLarge);
+                }
+                ReadmeFetchOutcome::Fresh(FreshReadme {
+                    bytes: bytes.to_vec(),
+                    etag,
+                })
+            }
+            reqwest::StatusCode::NOT_MODIFIED => ReadmeFetchOutcome::NotModified,
+            reqwest::StatusCode::NOT_FOUND => ReadmeFetchOutcome::NotFound,
+            reqwest::StatusCode::UNAUTHORIZED | reqwest::StatusCode::FORBIDDEN => {
+                ReadmeFetchOutcome::NotAuthorized
+            }
+            status => {
+                return Err(ProviderError::UnexpectedStatus {
+                    status: status.as_u16(),
+                });
+            }
+        };
+        Ok(ReadmeReply {
             outcome,
             rate_limit,
         })
