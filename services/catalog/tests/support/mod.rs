@@ -7,6 +7,11 @@ pub(crate) const KEY_HEX: &str = "00112233445566778899aabbccddeeff00112233445566
 
 pub(crate) struct HttpResponse {
     pub(crate) status: u16,
+    #[allow(
+        dead_code,
+        reason = "only content-boundary tests inspect response headers"
+    )]
+    pub(crate) headers: String,
     pub(crate) body: String,
 }
 
@@ -49,6 +54,10 @@ pub(crate) fn wait_ready(
     }
 }
 
+#[allow(
+    dead_code,
+    reason = "the shared support module is compiled independently for each integration test"
+)]
 pub(crate) fn http_json(
     address: SocketAddr,
     route: &str,
@@ -60,6 +69,29 @@ pub(crate) fn http_json(
         address,
         &format!(
             "POST {route} HTTP/1.1\r\nHost: localhost\r\nx-ratatoskr-user-id: {user_id}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+            body.len()
+        ),
+    )
+}
+
+#[allow(
+    dead_code,
+    reason = "only the service-authenticated content-boundary test uses this helper"
+)]
+pub(crate) fn http_service_json(
+    address: SocketAddr,
+    route: &str,
+    bearer_token: Option<&str>,
+    body: &serde_json::Value,
+) -> Result<HttpResponse, Box<dyn std::error::Error>> {
+    let body = body.to_string();
+    let authorization = bearer_token.map_or_else(String::new, |token| {
+        format!("Authorization: Bearer {token}\r\n")
+    });
+    send_request(
+        address,
+        &format!(
+            "POST {route} HTTP/1.1\r\nHost: localhost\r\n{authorization}Content-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
             body.len()
         ),
     )
@@ -102,6 +134,7 @@ fn send_request(
         .parse()?;
     Ok(HttpResponse {
         status,
+        headers: head.to_owned(),
         body: body.to_owned(),
     })
 }

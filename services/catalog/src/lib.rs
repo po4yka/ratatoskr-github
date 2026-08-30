@@ -14,8 +14,10 @@ use axum::routing::get;
 
 mod repository_action_attempts;
 mod repository_api;
+mod repository_content_api;
 
 pub use repository_api::{RepositoryApiState, domain_router};
+pub use repository_content_api::{ServiceBearerToken, ServiceBearerTokenError, internal_router};
 
 const STARTING: u8 = 0;
 const READY: u8 = 1;

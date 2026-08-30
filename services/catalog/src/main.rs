@@ -18,8 +18,8 @@ use ratatoskr_github_catalog::{
     run_full_snapshot, run_star_list_snapshot,
 };
 use ratatoskr_github_catalog_service::{
-    Lifecycle, OperatorCommand, OperatorCommandError, RepositoryApiState, admin_router,
-    domain_router, parse_operator_command,
+    Lifecycle, OperatorCommand, OperatorCommandError, RepositoryApiState, ServiceBearerToken,
+    ServiceBearerTokenError, admin_router, domain_router, internal_router, parse_operator_command,
 };
 use secrecy::{ExposeSecret as _, SecretString};
 use uuid::Uuid;
@@ -84,6 +84,9 @@ enum ProcessError {
     /// A service listener failed while serving.
     #[error("a service listener failed")]
     Serve(#[source] std::io::Error),
+    /// The configured internal service credential could not be loaded safely.
+    #[error("service authentication failed: {0}")]
+    ServiceAuth(#[from] ServiceBearerTokenError),
 }
 
 #[tokio::main]
@@ -232,16 +235,46 @@ async fn serve(config: Config) -> Result<(), ProcessError> {
         provider,
         config.credentials.encryption_key().ok(),
     );
+    let internal = if let Some(path) = config.service_auth.knowledge_token_file.as_deref() {
+        let token = ServiceBearerToken::from_file(path)?;
+        let listener = tokio::net::TcpListener::bind(config.internal_api.listen_address)
+            .await
+            .map_err(ProcessError::Bind)?;
+        Some((
+            listener,
+            repository_api.clone().with_knowledge_service_token(token),
+        ))
+    } else {
+        None
+    };
     lifecycle.mark_ready();
-    serve_listeners(
-        admin_listener,
-        api_listener,
-        repository_api,
-        lifecycle,
-        database,
-        Duration::from_millis(config.limits.shutdown_timeout_ms),
-    )
-    .await
+    let shutdown_timeout = Duration::from_millis(config.limits.shutdown_timeout_ms);
+    match internal {
+        Some((internal_listener, internal_api)) => {
+            serve_listeners_with_internal(
+                admin_listener,
+                api_listener,
+                internal_listener,
+                repository_api,
+                internal_api,
+                lifecycle,
+                database,
+                shutdown_timeout,
+            )
+            .await
+        }
+        None => {
+            serve_listeners(
+                admin_listener,
+                api_listener,
+                repository_api,
+                lifecycle,
+                database,
+                shutdown_timeout,
+            )
+            .await
+        }
+    }
 }
 
 async fn register_replacement_pat(config: &Config, account_id: &str) -> Result<(), ProcessError> {
@@ -338,6 +371,71 @@ async fn serve_listeners(
             tokio::time::timeout(shutdown_timeout, async {
                 let (admin, api) = tokio::join!(&mut admin_server, &mut api_server);
                 admin.and(api)
+            })
+            .await
+            .map_err(|_| ProcessError::Serve(std::io::Error::other(
+                "service listeners did not stop within the shutdown bound",
+            )))?
+        }
+    };
+    database.close().await;
+    outcome.map_err(ProcessError::Serve)
+}
+
+#[allow(
+    clippy::too_many_arguments,
+    reason = "three listener/state pairs plus lifecycle and shutdown policy form one process boundary"
+)]
+async fn serve_listeners_with_internal(
+    admin_listener: tokio::net::TcpListener,
+    api_listener: tokio::net::TcpListener,
+    internal_listener: tokio::net::TcpListener,
+    repository_api: RepositoryApiState,
+    internal_api: RepositoryApiState,
+    lifecycle: Lifecycle,
+    database: Database,
+    shutdown_timeout: Duration,
+) -> Result<(), ProcessError> {
+    let (shutdown_tx, shutdown_rx) = tokio::sync::watch::channel(false);
+    let admin_shutdown = shutdown_rx.clone();
+    let api_shutdown = shutdown_rx.clone();
+    let internal_shutdown = shutdown_rx;
+    let admin_server = axum::serve(admin_listener, admin_router(lifecycle.clone()))
+        .with_graceful_shutdown(wait_for_shutdown(admin_shutdown))
+        .into_future();
+    let api_server = axum::serve(api_listener, domain_router(repository_api))
+        .with_graceful_shutdown(wait_for_shutdown(api_shutdown))
+        .into_future();
+    let internal_server = axum::serve(internal_listener, internal_router(internal_api))
+        .with_graceful_shutdown(wait_for_shutdown(internal_shutdown))
+        .into_future();
+    tokio::pin!(admin_server);
+    tokio::pin!(api_server);
+    tokio::pin!(internal_server);
+    let outcome = tokio::select! {
+        result = &mut admin_server => {
+            let _ignored = shutdown_tx.send(true);
+            let (api, internal) = tokio::join!(&mut api_server, &mut internal_server);
+            result.and(api).and(internal)
+        }
+        result = &mut api_server => {
+            let _ignored = shutdown_tx.send(true);
+            let (admin, internal) = tokio::join!(&mut admin_server, &mut internal_server);
+            result.and(admin).and(internal)
+        }
+        result = &mut internal_server => {
+            let _ignored = shutdown_tx.send(true);
+            let (admin, api) = tokio::join!(&mut admin_server, &mut api_server);
+            result.and(admin).and(api)
+        }
+        result = shutdown_signal() => {
+            result.map_err(ProcessError::Serve)?;
+            lifecycle.begin_drain();
+            let _ignored = shutdown_tx.send(true);
+            tokio::time::timeout(shutdown_timeout, async {
+                let (admin, api, internal) =
+                    tokio::join!(&mut admin_server, &mut api_server, &mut internal_server);
+                admin.and(api).and(internal)
             })
             .await
             .map_err(|_| ProcessError::Serve(std::io::Error::other(

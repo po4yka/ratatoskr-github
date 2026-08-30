@@ -1,4 +1,5 @@
 use std::net::{IpAddr, Ipv4Addr, SocketAddr};
+use std::path::PathBuf;
 use std::{error, fmt};
 
 use secrecy::SecretString;
@@ -15,6 +16,8 @@ pub struct Config {
     pub admin: AdminConfig,
     /// Host-local authenticated domain listener configuration.
     pub api: ApiConfig,
+    /// Private service-to-service listener configuration.
+    pub internal_api: InternalApiConfig,
     /// GitHub provider endpoint configuration.
     pub provider: ProviderConfig,
     /// Owned durable storage configuration.
@@ -23,6 +26,8 @@ pub struct Config {
     pub credentials: CredentialsConfig,
     /// GitHub OAuth application configuration.
     pub github_oauth: GithubOAuthConfig,
+    /// Service-to-service authentication configuration.
+    pub service_auth: ServiceAuthConfig,
     /// Ephemeral retired-source configuration used only by import commands.
     pub legacy: LegacyConfig,
     /// Resource and shutdown limits.
@@ -41,6 +46,20 @@ pub struct AdminConfig {
 pub struct ApiConfig {
     /// Socket address for Edge-authenticated domain routes.
     pub listen_address: SocketAddr,
+}
+
+/// Private authenticated listener used only between fleet services.
+#[derive(Debug, Clone, Serialize)]
+pub struct InternalApiConfig {
+    /// Socket address for service-authenticated internal routes.
+    pub listen_address: SocketAddr,
+}
+
+/// File-backed credentials for internal service callers.
+#[derive(Debug, Clone, Default, Serialize)]
+pub struct ServiceAuthConfig {
+    /// Absolute path to the bearer token shared only with Knowledge.
+    pub knowledge_token_file: Option<PathBuf>,
 }
 
 /// Bounded provider endpoint configuration.
@@ -318,10 +337,29 @@ impl Config {
     fn validate(&self) -> Result<(), ConfigError> {
         self.credentials.validate()?;
         self.github_oauth.validate()?;
+        if self
+            .service_auth
+            .knowledge_token_file
+            .as_ref()
+            .is_some_and(|path| !path.is_absolute())
+        {
+            return Err(ConfigError::new(
+                "RATATOSKR__SERVICE_AUTH__KNOWLEDGE_TOKEN_FILE",
+                "must be an absolute secret-file path",
+            ));
+        }
         if self.api.listen_address == self.admin.listen_address {
             return Err(ConfigError::new(
                 "RATATOSKR__API__LISTEN_ADDRESS",
                 "must differ from the operator listener",
+            ));
+        }
+        if self.internal_api.listen_address == self.admin.listen_address
+            || self.internal_api.listen_address == self.api.listen_address
+        {
+            return Err(ConfigError::new(
+                "RATATOSKR__INTERNAL_API__LISTEN_ADDRESS",
+                "must differ from the operator and domain listeners",
             ));
         }
         validate_provider_base_url("RATATOSKR__PROVIDER__BASE_URL", &self.provider.base_url)
@@ -371,6 +409,18 @@ fn apply_entry(config: &mut Config, key: &str, value: &str) -> Result<(), Config
             }
             config.api.listen_address = address;
         }
+        "RATATOSKR__INTERNAL_API__LISTEN_ADDRESS" => {
+            let address = value
+                .parse::<SocketAddr>()
+                .map_err(|_| ConfigError::new(key, "must be a socket address"))?;
+            if address.port() == 0 || !is_private_listener(address.ip()) {
+                return Err(ConfigError::new(
+                    key,
+                    "must be a private, loopback, or container-wildcard address with a port",
+                ));
+            }
+            config.internal_api.listen_address = address;
+        }
         "RATATOSKR__PROVIDER__BASE_URL" => {
             validate_provider_base_url(key, value)?;
             value
@@ -394,6 +444,9 @@ fn apply_entry(config: &mut Config, key: &str, value: &str) -> Result<(), Config
         }
         "RATATOSKR__GITHUB_OAUTH__CLIENT_SECRET" => {
             config.github_oauth.client_secret = Some(SecretString::from(value.to_owned()));
+        }
+        "RATATOSKR__SERVICE_AUTH__KNOWLEDGE_TOKEN_FILE" => {
+            config.service_auth.knowledge_token_file = Some(PathBuf::from(value));
         }
         "RATATOSKR__LEGACY__SOURCE_DATABASE_URL" => {
             value
@@ -441,6 +494,23 @@ fn validate_provider_base_url(key: &str, value: &str) -> Result<(), ConfigError>
     }
 }
 
+fn is_private_listener(address: IpAddr) -> bool {
+    match address {
+        IpAddr::V4(address) => {
+            address.is_unspecified()
+                || address.is_loopback()
+                || address.is_private()
+                || address.is_link_local()
+        }
+        IpAddr::V6(address) => {
+            address.is_unspecified()
+                || address.is_loopback()
+                || address.is_unique_local()
+                || address.is_unicast_link_local()
+        }
+    }
+}
+
 fn parse_positive<T>(key: &str, value: &str) -> Result<T, ConfigError>
 where
     T: std::str::FromStr + Default + PartialOrd,
@@ -471,6 +541,9 @@ impl Default for Config {
             api: ApiConfig {
                 listen_address: SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), 8092),
             },
+            internal_api: InternalApiConfig {
+                listen_address: SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), 8093),
+            },
             provider: ProviderConfig {
                 base_url: "https://api.github.com".to_owned(),
             },
@@ -485,6 +558,7 @@ impl Default for Config {
                 client_id: None,
                 client_secret: None,
             },
+            service_auth: ServiceAuthConfig::default(),
             legacy: LegacyConfig {
                 source_database_url: None,
             },

@@ -57,6 +57,7 @@ ratatoskr-github-contracts = { git = "https://github.com/po4yka/ratatoskr-contra
 ratatoskr-identifiers = { git = "https://github.com/po4yka/ratatoskr-contracts.git", rev = "5b8bbb4220375f6236066a23b19e9d6f8faaaf28" }
 ratatoskr-operation-contracts = { git = "https://github.com/po4yka/ratatoskr-contracts.git", rev = "5b8bbb4220375f6236066a23b19e9d6f8faaaf28" }
 sha2 = "=0.10.9"
+subtle = "=2.6.1"
 
 [workspace.lints.rust]
 unsafe_code = "forbid"

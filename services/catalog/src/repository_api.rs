@@ -41,10 +41,11 @@ const MAX_REQUEST_BYTES: usize = 16 * 1024;
 /// Collaborators shared by repository domain handlers.
 #[derive(Debug, Clone)]
 pub struct RepositoryApiState {
-    database: Database,
+    pub(crate) database: Database,
     provider: ReqwestGithubApi,
     ledger: Arc<RateLimitLedger>,
     credential_key: Option<CredentialKey>,
+    pub(crate) knowledge_service_token: Option<crate::ServiceBearerToken>,
 }
 
 impl RepositoryApiState {
@@ -60,7 +61,15 @@ impl RepositoryApiState {
             provider,
             ledger: Arc::new(RateLimitLedger::new()),
             credential_key,
+            knowledge_service_token: None,
         }
+    }
+
+    /// Enables the exact service credential accepted by the Knowledge content boundary.
+    #[must_use]
+    pub fn with_knowledge_service_token(mut self, token: crate::ServiceBearerToken) -> Self {
+        self.knowledge_service_token = Some(token);
+        self
     }
 }
 

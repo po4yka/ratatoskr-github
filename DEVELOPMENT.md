@@ -14,16 +14,34 @@ The defaults bind operator routes to `127.0.0.1:9095`, domain routes to
 ```bash
 RATATOSKR__ADMIN__LISTEN_ADDRESS=127.0.0.1:9095
 RATATOSKR__API__LISTEN_ADDRESS=127.0.0.1:8092
+RATATOSKR__INTERNAL_API__LISTEN_ADDRESS=0.0.0.0:8093
 RATATOSKR__STORAGE__DATABASE_URL=postgres://github:github@127.0.0.1:5435/github
 RATATOSKR__PROVIDER__BASE_URL=https://api.github.com
 RATATOSKR__CREDENTIALS__ENCRYPTION_KEY_HEX=<64 lowercase or uppercase hex characters>
 RATATOSKR__CREDENTIALS__KEY_VERSION=<non-secret key label>
+RATATOSKR__SERVICE_AUTH__KNOWLEDGE_TOKEN_FILE=/etc/ratatoskr/github/knowledge.token
 ```
 
-Both listeners must remain distinct loopback sockets. Provider HTTP is accepted
-only for a numeric loopback origin in synthetic tests. The database URL and
-encryption key are secrets and must come from the deployment secret store, not
-arguments or logs.
+The operator and Edge domain listeners must remain distinct loopback sockets. The separately bound
+internal listener may use loopback, a private/link-local address, or `0.0.0.0`/`::` for a private
+container network; never publish its port through the host or an ingress. It is bound only when the
+Knowledge token file is configured, and it serves no Edge routes. Provider HTTP is accepted only
+for a numeric loopback origin in synthetic tests. The database URL and encryption key are secrets
+and must come from the deployment secret store, not arguments or logs.
+
+The Knowledge README resolver is enabled only when
+`RATATOSKR__SERVICE_AUTH__KNOWLEDGE_TOKEN_FILE` names an absolute regular file. Store one opaque
+32-256 character token there, share it only with the Knowledge deployable, and keep the file
+unreadable by users outside its owner/group boundary (`0640` or stricter). The token value is never
+accepted in process arguments or configuration fields. Without this file the internal listener is
+not bound, so an accidentally unconfigured Catalog cannot silently expose immutable evidence.
+
+Knowledge calls `POST /internal/v1/repository-readmes/resolve` on the private internal listener with
+a Bearer token and only the typed `owner`, `repository_id`, and `content_ref` from the retained
+analysis request. Catalog returns at most 1 MiB of `text/markdown` bytes after confirming the exact
+owner/repository publication and independently verifying digest, media type, and length. The route
+does not exist on the Edge API listener and does not accept a provider URL, filesystem path, or raw
+database key.
 
 ## Toolchain and gate
 

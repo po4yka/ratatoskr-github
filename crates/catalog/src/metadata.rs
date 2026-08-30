@@ -81,6 +81,27 @@ pub enum ReadmeBlobError {
     LengthOverflow,
 }
 
+/// Failure while resolving immutable README evidence for its authorized analysis owner.
+#[derive(Debug, thiserror::Error)]
+#[non_exhaustive]
+pub enum ResolveReadmeError {
+    /// No exact owner, repository, and content-reference publication exists.
+    #[error("the README evidence is unavailable")]
+    NotFound,
+    /// The stored README exceeds the fixed analysis-input limit.
+    #[error("the README evidence exceeds the response limit")]
+    TooLarge,
+    /// Stored bytes no longer agree with their immutable reference.
+    #[error("the README evidence failed integrity verification")]
+    Integrity,
+    /// A retained publication no longer decodes as its published contract.
+    #[error("the repository-analysis publication is invalid")]
+    Contract(#[source] serde_json::Error),
+    /// Catalog-owned durable storage was unavailable.
+    #[error(transparent)]
+    Persistence(#[from] PersistenceError),
+}
+
 /// Preserves one bounded README body under its SHA-256 identity and returns only its immutable
 /// cross-service reference. Repeated preservation of equal bytes converges on one row.
 ///
@@ -113,6 +134,100 @@ pub async fn store_readme(database: &Database, bytes: &[u8]) -> Result<BlobRef, 
         media_type: MediaType::parse("text/markdown").map_err(|_| ReadmeBlobError::Contract)?,
         length_bytes: u64::try_from(length_bytes).map_err(|_| ReadmeBlobError::LengthOverflow)?,
     })
+}
+
+/// Resolves one exact Catalog-owned README reference only when a retained analysis publication
+/// binds it to the supplied tenant and repository.
+///
+/// The returned bytes are independently checked against the reference even though database
+/// constraints also preserve length and media type.
+///
+/// # Errors
+///
+/// Returns [`ResolveReadmeError`] when authorization evidence is absent, the body is oversized,
+/// stored state conflicts with the immutable reference, or storage is unavailable.
+pub async fn resolve_authorized_readme(
+    database: &Database,
+    owner: &TenantRef,
+    repository_id: RepositoryId,
+    content_ref: &BlobRef,
+    max_bytes: usize,
+) -> Result<Vec<u8>, ResolveReadmeError> {
+    if content_ref.owner_service.as_str() != "ratatoskr-github"
+        || content_ref.digest.algorithm != DigestAlgorithm::Sha256
+        || content_ref.media_type.as_str() != "text/markdown"
+    {
+        return Err(ResolveReadmeError::NotFound);
+    }
+
+    let publication: Option<Value> = sqlx::query_scalar(
+        "select payload
+         from github_catalog.repository_analysis_publications
+         where repository_id = $1
+           and payload ->> 'owner' = $2
+           and payload ->> 'repository_id' = $3
+           and payload #>> '{source_revision,readme,content_ref,digest,hex}' = $4
+         limit 1",
+    )
+    .bind(repository_id.0)
+    .bind(owner.to_string())
+    .bind(repository_id.to_string())
+    .bind(content_ref.digest.hex.as_str())
+    .fetch_optional(database.pool())
+    .await
+    .map_err(PersistenceError::Query)?;
+    let publication = publication.ok_or(ResolveReadmeError::NotFound)?;
+    let request: RepositoryAnalysisRequested =
+        serde_json::from_value(publication).map_err(ResolveReadmeError::Contract)?;
+    let ReadmeRevision::Present {
+        content_ref: published_ref,
+    } = request.source_revision.readme
+    else {
+        return Err(ResolveReadmeError::NotFound);
+    };
+    if request.owner != *owner
+        || request.repository_id != repository_id
+        || published_ref != *content_ref
+    {
+        return Err(ResolveReadmeError::NotFound);
+    }
+
+    let max_length = i64::try_from(max_bytes).map_err(|_| ResolveReadmeError::TooLarge)?;
+    let stored: Option<(Vec<u8>, String, i64)> = sqlx::query_as(
+        "select bytes, media_type, length_bytes
+         from github_catalog.repository_readme_blobs
+         where content_digest = $1 and length_bytes <= $2",
+    )
+    .bind(content_ref.digest.hex.as_str())
+    .bind(max_length)
+    .fetch_optional(database.pool())
+    .await
+    .map_err(PersistenceError::Query)?;
+    let Some((bytes, media_type, length_bytes)) = stored else {
+        let stored_length: Option<i64> = sqlx::query_scalar(
+            "select length_bytes from github_catalog.repository_readme_blobs
+             where content_digest = $1",
+        )
+        .bind(content_ref.digest.hex.as_str())
+        .fetch_optional(database.pool())
+        .await
+        .map_err(PersistenceError::Query)?;
+        return match stored_length {
+            Some(length) if length > max_length => Err(ResolveReadmeError::TooLarge),
+            Some(_) | None => Err(ResolveReadmeError::NotFound),
+        };
+    };
+
+    let actual_digest = sha256_hex(&Sha256::digest(&bytes));
+    let expected_length = u64::try_from(length_bytes).map_err(|_| ResolveReadmeError::Integrity)?;
+    if media_type != content_ref.media_type.as_str()
+        || expected_length != content_ref.length_bytes
+        || bytes.len() > max_bytes
+        || actual_digest != content_ref.digest.hex.as_str()
+    {
+        return Err(ResolveReadmeError::Integrity);
+    }
+    Ok(bytes)
 }
 
 /// Applies one fresh provider body to the repository's metadata projection.

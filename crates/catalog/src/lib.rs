@@ -46,7 +46,8 @@ pub use commands::{
 };
 pub use config::{
     AdminConfig, ApiConfig, Config, ConfigError, CredentialsConfig, GithubOAuthConfig,
-    LegacyConfig, Limits, OAuthAppCredentials, ProviderConfig, StorageConfig,
+    InternalApiConfig, LegacyConfig, Limits, OAuthAppCredentials, ProviderConfig,
+    ServiceAuthConfig, StorageConfig,
 };
 pub use credentials::{
     CredentialError, CredentialKey, VerifiedGithubAccount, load_active_oauth, load_active_pat,
@@ -67,8 +68,8 @@ pub use legacy::{
 };
 pub use metadata::{
     AppliedOutcome, REVISION_HISTORY_LIMIT, ReadmeBlobError, RepositoryAnalysisPublicationError,
-    RepositoryAnalysisSource, apply_fresh_body, apply_fresh_source, apply_not_modified,
-    store_readme,
+    RepositoryAnalysisSource, ResolveReadmeError, apply_fresh_body, apply_fresh_source,
+    apply_not_modified, resolve_authorized_readme, store_readme,
 };
 pub use modes::{
     RequestedMode, SetModeRequest, TrackOutcome, set_repository_mode, track_repository,

@@ -7,10 +7,26 @@ fn defaults_are_finite_and_loopback() {
     let config = Config::default();
 
     assert!(config.admin.listen_address.ip().is_loopback());
+    assert!(config.api.listen_address.ip().is_loopback());
+    assert!(config.internal_api.listen_address.ip().is_loopback());
     assert_ne!(config.admin.listen_address.port(), 0);
     assert!(config.limits.database_connections > 0);
     assert!(config.limits.database_acquire_timeout_ms > 0);
     assert!(config.limits.shutdown_timeout_ms > 0);
+}
+
+#[test]
+fn internal_api_accepts_private_container_bind_but_refuses_public_addresses() {
+    let configured =
+        Config::from_environment([("RATATOSKR__INTERNAL_API__LISTEN_ADDRESS", "0.0.0.0:8093")]);
+    assert!(configured.is_ok(), "container-private wildcard must load");
+
+    for value in ["8.8.8.8:8093", "[2001:4860:4860::8888]:8093", "0.0.0.0:0"] {
+        assert!(
+            Config::from_environment([("RATATOSKR__INTERNAL_API__LISTEN_ADDRESS", value)]).is_err(),
+            "public or portless internal listener was accepted: {value}"
+        );
+    }
 }
 
 #[test]
@@ -63,6 +79,26 @@ fn serialization_omits_the_database_url() -> Result<(), serde_json::Error> {
 
     let encoded = serde_json::to_string(&config)?;
     assert!(!encoded.contains("postgres://"));
+    Ok(())
+}
+
+#[test]
+fn knowledge_service_auth_accepts_only_an_absolute_secret_file_path()
+-> Result<(), Box<dyn std::error::Error>> {
+    let absolute = "/etc/ratatoskr/github/knowledge.token";
+    let config =
+        Config::from_environment([("RATATOSKR__SERVICE_AUTH__KNOWLEDGE_TOKEN_FILE", absolute)])?;
+    assert_eq!(
+        config.service_auth.knowledge_token_file.as_deref(),
+        Some(std::path::Path::new(absolute))
+    );
+    assert!(
+        Config::from_environment([(
+            "RATATOSKR__SERVICE_AUTH__KNOWLEDGE_TOKEN_FILE",
+            "relative/knowledge.token",
+        )])
+        .is_err()
+    );
     Ok(())
 }
 
