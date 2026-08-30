@@ -13,26 +13,51 @@ async fn configured_process_serves_distinct_operator_and_domain_listeners_and_st
         .fetch_one(database.database.pool())
         .await?;
     let database_url = test_database_url(&database_name)?;
+    let seed_path = std::env::temp_dir().join(format!("github-test-{}.nkey", uuid::Uuid::now_v7()));
+    let seed = nkeys::KeyPair::new_user().seed()?;
+    std::fs::write(&seed_path, seed)?;
+    let nats_url = test_nats_url();
+    provision_bus(&nats_url).await?;
     let reserved_admin = TcpListener::bind("127.0.0.1:0")?;
     let admin_address = reserved_admin.local_addr()?;
     let reserved_api = TcpListener::bind("127.0.0.1:0")?;
     let api_address = reserved_api.local_addr()?;
 
-    let check = configured_command(admin_address, api_address, &database_url)
-        .arg("check-config")
-        .status()?;
+    let check = configured_command(
+        admin_address,
+        api_address,
+        &database_url,
+        &nats_url,
+        &seed_path,
+    )
+    .arg("check-config")
+    .status()?;
     assert!(check.success());
     drop(reserved_admin);
     drop(reserved_api);
 
-    let mut child = configured_command(admin_address, api_address, &database_url)
-        .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .spawn()?;
-    let result = exercise_process(&mut child, admin_address, api_address);
+    let mut child = configured_command(
+        admin_address,
+        api_address,
+        &database_url,
+        &nats_url,
+        &seed_path,
+    )
+    .stdout(Stdio::null())
+    .stderr(Stdio::null())
+    .spawn()?;
+    let result = exercise_process(
+        &mut child,
+        admin_address,
+        api_address,
+        &nats_url,
+        &database.database,
+    )
+    .await;
     stop_process(&mut child)?;
 
     database.cleanup().await?;
+    std::fs::remove_file(seed_path)?;
     result
 }
 
@@ -40,6 +65,8 @@ fn configured_command(
     admin_address: SocketAddr,
     api_address: SocketAddr,
     database_url: &str,
+    nats_url: &str,
+    seed_path: &std::path::Path,
 ) -> Command {
     let mut command = Command::new(env!("CARGO_BIN_EXE_ratatoskr-github-catalog"));
     command
@@ -48,14 +75,66 @@ fn configured_command(
             admin_address.to_string(),
         )
         .env("RATATOSKR__API__LISTEN_ADDRESS", api_address.to_string())
-        .env("RATATOSKR__STORAGE__DATABASE_URL", database_url);
+        .env("RATATOSKR__STORAGE__DATABASE_URL", database_url)
+        .env("RATATOSKR__BUS__URL", nats_url)
+        .env(
+            "RATATOSKR__CREDENTIALS__ENCRYPTION_KEY_HEX",
+            "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff",
+        )
+        .env("RATATOSKR__CREDENTIALS__KEY_VERSION", "test-key")
+        .env("RATATOSKR__BUS__NKEY_SEED_PATH", seed_path);
     command
 }
 
-fn exercise_process(
+async fn provision_bus(url: &str) -> Result<(), Box<dyn std::error::Error>> {
+    let context = async_nats::jetstream::new(async_nats::connect(url).await?);
+    for (name, subjects) in [
+        ("ratatoskr_commands", vec!["cmd.>".to_owned()]),
+        ("ratatoskr_events", vec!["evt.>".to_owned()]),
+    ] {
+        context
+            .get_or_create_stream(async_nats::jetstream::stream::Config {
+                name: name.to_owned(),
+                subjects,
+                ..async_nats::jetstream::stream::Config::default()
+            })
+            .await?;
+    }
+    for spec in ratatoskr_github_catalog_service::CONSUMERS {
+        context
+            .get_stream(spec.stream)
+            .await?
+            .get_or_create_consumer(
+                spec.durable,
+                async_nats::jetstream::consumer::pull::Config {
+                    durable_name: Some(spec.durable.to_owned()),
+                    filter_subject: spec.subject.to_owned(),
+                    ack_policy: async_nats::jetstream::consumer::AckPolicy::Explicit,
+                    ack_wait: Duration::from_mins(2),
+                    max_deliver: 10,
+                    ..async_nats::jetstream::consumer::pull::Config::default()
+                },
+            )
+            .await?;
+    }
+    Ok(())
+}
+
+#[expect(
+    clippy::disallowed_methods,
+    reason = "test-only broker location is not process configuration"
+)]
+fn test_nats_url() -> String {
+    std::env::var("GITHUB_CATALOG_TEST_NATS_URL")
+        .unwrap_or_else(|_| "nats://127.0.0.1:14227".to_owned())
+}
+
+async fn exercise_process(
     child: &mut Child,
     admin_address: SocketAddr,
     api_address: SocketAddr,
+    nats_url: &str,
+    database: &ratatoskr_github_catalog::Database,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let deadline = Instant::now() + Duration::from_secs(5);
     loop {
@@ -79,6 +158,47 @@ fn exercise_process(
         404,
         "the separately configured domain listener must accept HTTP"
     );
+    exercise_fixed_consumers(nats_url, database).await?;
+    Ok(())
+}
+
+async fn exercise_fixed_consumers(
+    nats_url: &str,
+    database: &ratatoskr_github_catalog::Database,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let client = async_nats::connect(nats_url).await?;
+    let context = async_nats::jetstream::new(client);
+    for spec in ratatoskr_github_catalog_service::CONSUMERS {
+        let identity_name = if spec.subject.starts_with("cmd.") {
+            "command_id"
+        } else {
+            "event_id"
+        };
+        let identity = uuid::Uuid::now_v7();
+        let payload = format!("{{\"{identity_name}\":\"{identity}\",\"malformed\":true}}");
+        context.publish(spec.subject, payload.into()).await?.await?;
+    }
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(5);
+    loop {
+        let rejected: i64 = sqlx::query_scalar(
+            "select count(*) from github_catalog.inbox_events where state='rejected'",
+        )
+        .fetch_one(database.pool())
+        .await?;
+        if rejected == 4 {
+            break;
+        }
+        if tokio::time::Instant::now() >= deadline {
+            return Err(format!("only {rejected} fixed consumers committed rejection").into());
+        }
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+    for spec in ratatoskr_github_catalog_service::CONSUMERS {
+        let consumer: async_nats::jetstream::consumer::PullConsumer = context
+            .get_consumer_from_stream(spec.durable, spec.stream)
+            .await?;
+        assert_eq!(consumer.cached_info().num_ack_pending, 0);
+    }
     Ok(())
 }
 

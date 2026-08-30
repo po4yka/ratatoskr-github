@@ -23,6 +23,29 @@ async fn readiness_follows_startup_and_drain() -> Result<(), Box<dyn std::error:
     Ok(())
 }
 
+#[tokio::test]
+async fn listener_only_bus_loss_and_worker_exit_are_never_reported_ready()
+-> Result<(), Box<dyn std::error::Error>> {
+    let lifecycle = Lifecycle::starting();
+    let app = admin_router(lifecycle.clone());
+    lifecycle.mark_database_ready();
+    lifecycle.mark_serving();
+    lifecycle.set_live_workers(7);
+    assert_response(&app, "/ready", StatusCode::SERVICE_UNAVAILABLE).await?;
+    lifecycle.set_bus_ready(true);
+    lifecycle.set_topology_ready(true);
+    assert_response(&app, "/ready", StatusCode::OK).await?;
+    lifecycle.set_bus_ready(false);
+    assert_response(&app, "/ready", StatusCode::SERVICE_UNAVAILABLE).await?;
+    lifecycle.set_bus_ready(true);
+    lifecycle.set_live_workers(6);
+    assert_response(&app, "/ready", StatusCode::SERVICE_UNAVAILABLE).await?;
+    lifecycle.record_dead_letter();
+    lifecycle.set_live_workers(7);
+    assert_response(&app, "/ready", StatusCode::OK).await?;
+    Ok(())
+}
+
 async fn assert_response(
     app: &axum::Router,
     path: &str,

@@ -16,21 +16,29 @@ name = "ratatoskr-github-catalog"
 path = "src/main.rs"
 
 [dependencies]
+async-nats.workspace = true
 axum.workspace = true
+futures-util.workspace = true
+ratatoskr-backup-contracts.workspace = true
 ratatoskr-error-contracts.workspace = true
+ratatoskr-event-envelope.workspace = true
 ratatoskr-github-catalog = { path = "../../crates/catalog" }
 ratatoskr-github-contracts.workspace = true
 ratatoskr-identifiers.workspace = true
 secrecy.workspace = true
 serde.workspace = true
 serde_json.workspace = true
+sha2.workspace = true
 sqlx.workspace = true
 thiserror.workspace = true
+time.workspace = true
 tokio.workspace = true
+tracing.workspace = true
 uuid.workspace = true
 
 [dev-dependencies]
 http-body-util.workspace = true
+nkeys = "=0.4.5"
 ratatoskr-github-catalog = { path = "../../crates/catalog", features = ["test-support"] }
 tower.workspace = true
 wiremock.workspace = true

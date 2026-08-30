@@ -3,7 +3,7 @@
 > Status: Active  
 > Last reviewed: 2026-08-23
 
-The service foundation and repository domain API are implemented. The real process binds loopback operator and Edge-authenticated domain listeners, stores replacement PATs encrypted, serves read-only repository previews, and executes confirmed `metadata`/`track`/`star` actions with durable exact replay and truthful component outcomes. Snapshot, list, mode, mutation, watch, analysis-request, and desired-policy behavior remains as documented in the repository specs. OAuth and live fleet-bus handling are not implemented.
+The service foundation, repository domain API, and fleet-bus runtime are implemented. The real process binds loopback operator and Edge-authenticated domain listeners, stores replacement PATs encrypted, serves read-only repository previews, executes confirmed `metadata`/`track`/`star` actions, and supervises one outbox publisher, four fixed-durable consumers, and two due workers. OAuth remains incomplete.
 
 ### Local process configuration
 
@@ -16,14 +16,18 @@ RATATOSKR__ADMIN__LISTEN_ADDRESS=127.0.0.1:9095
 RATATOSKR__API__LISTEN_ADDRESS=127.0.0.1:8092
 RATATOSKR__STORAGE__DATABASE_URL=postgres://github:github@127.0.0.1:5435/github
 RATATOSKR__PROVIDER__BASE_URL=https://api.github.com
+RATATOSKR__BUS__URL=nats://127.0.0.1:14227
+RATATOSKR__BUS__NKEY_SEED_PATH=/absolute/protected/github.nkey
 RATATOSKR__CREDENTIALS__ENCRYPTION_KEY_HEX=<64 lowercase or uppercase hex characters>
 RATATOSKR__CREDENTIALS__KEY_VERSION=<non-secret key label>
 ```
 
 Both listeners must remain distinct loopback sockets. Provider HTTP is accepted
 only for a numeric loopback origin in synthetic tests. The database URL and
-encryption key are secrets and must come from the deployment secret store, not
-arguments or logs.
+encryption key and NKey seed are secrets and must come from the deployment secret store, not
+arguments or logs. Local `docker compose up -d --wait` exposes the disposable JetStream fixture on
+`127.0.0.1:14227`; tests provision topology as fixture setup, while the production process has no
+topology mutation API.
 
 ## Toolchain and gate
 

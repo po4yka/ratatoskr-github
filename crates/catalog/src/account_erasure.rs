@@ -89,8 +89,8 @@ async fn delete_owner_state(
     owner_ref: &str,
 ) -> Result<(), PersistenceError> {
     for statement in [
-        "delete from github_catalog.outbox_events where payload ->> 'account' = $1",
-        "delete from github_catalog.inbox_events where payload ->> 'account' = $1",
+        "delete from github_catalog.outbox_events where owner_ref = $1",
+        "delete from github_catalog.inbox_events where owner_ref = $1",
         "delete from github_catalog.repository_analysis_links where owner_ref = $1",
         "delete from github_catalog.repository_analysis_requests where owner_ref = $1",
         "delete from github_catalog.repository_watches where owner_ref = $1",

@@ -2,7 +2,7 @@
 
 `ratatoskr-github` is the GitHub Catalog bounded context for Ratatoskr. It records what repositories a user has starred or chosen to track, preserves GitHub metadata and list membership, coordinates repository analysis, and publishes the desired backup state consumed by Git Vault.
 
-> **Status:** a Rust service runs locally with strict configuration, structured process telemetry, operator health routes (`/live`, `/ready`, `/metrics`, `/version`), stable repository identity and star/list synchronization, encrypted replacement-PAT storage, audited repository modes and provider mutations, and desired-backup-policy publication. A separate loopback domain listener serves Edge-authenticated repository preview and confirmed `metadata`/`track`/`star` actions with durable replay and component-level partial results. OAuth, an internet-facing API, and live fleet-bus handlers remain planned.
+> **Status:** a Rust service runs locally with strict configuration, structured process telemetry, operator health routes (`/live`, `/ready`, `/metrics`, `/version`), stable repository identity and star/list synchronization, encrypted replacement-PAT storage, audited repository modes and provider mutations, and desired-backup-policy publication. Its supervised fleet-bus runtime publishes the transactional outbox, consumes four Platform-owned fixed durables, advances due analysis/policy work, and drains before database shutdown. A separate loopback domain listener serves Edge-authenticated repository preview and confirmed `metadata`/`track`/`star` actions with durable replay and component-level partial results. OAuth and an internet-facing API remain planned.
 
 > [!IMPORTANT]
 > **Ratatoskr is in development.** No database holds data that has to survive a schema change.
@@ -256,7 +256,7 @@ Repository analysis belongs to `ratatoskr-knowledge`.
 When metadata or README content changes, Catalog may publish:
 
 ```text
-knowledge.repository_analysis.requested.v1
+evt.knowledge.repository_analysis.requested.v1
 ```
 
 Knowledge returns a versioned result containing purpose, technology stack, architectural summary, concepts, use cases, target audience, maturity, dependencies, confidence, and hallucination-risk fields. Catalog stores only the accepted analysis reference and user-facing projection required for its API.
@@ -361,14 +361,16 @@ Internal provider details are not exposed as stable public contracts.
 
 ## Observability
 
-The implemented foundation exports only:
+The process exports bounded low-cardinality process and fleet-bus counters:
 
 ```text
 github_catalog_process_info
+github_catalog_bus_retries_total
+github_catalog_bus_duplicates_total
+github_catalog_bus_rejections_total
+github_catalog_outbox_dead_letters_total
+github_catalog_bus_workers
 ```
-
-Sync, snapshot, rate-limit, mutation, and analysis metrics remain planned with the behavior that
-would emit them.
 
 ## Non-goals
 
@@ -394,11 +396,12 @@ through 10 remain planned.
 
 ## Workspace integration
 
-The planned `ratatoskr-workspace` topology will pin Catalog with compatible contracts, Vault,
-Knowledge, Telegram, Platform, and client commits. No workspace pin or GitHub-to-Vault integration
-profile exists yet. Cross-repository changes are coordinated through changesets; this repository
-remains independently buildable and testable.
+`ratatoskr-workspace` coordinates the compatible Platform topology and Catalog runtime through
+changeset `GHB-017`. Platform owns stream/durable creation; this deployable only verifies and uses
+its exact topology. Workspace pins advance only after both child branches merge and the combined
+snapshot passes integration verification. This repository remains independently buildable and
+testable.
 
 ## Project status
 
-The process foundation (configuration, telemetry, operator health, owned schema), repository identity with metadata, full snapshots, incremental scans with scheduled reconciliation via consumed sync commands, native star-list snapshots chained independently onto every commanded sync, repository modes with audited validated transitions, and authorized idempotent star/list mutations with truthful partial-success outcomes are implemented and gated by CI. Account connections (credential storage), public APIs, watches, and event publication do not exist yet; those sections above describe the intended GitHub Catalog architecture. Mutation authorization reads granted scopes recorded on the account; credential flows populate them in item 2.
+The process foundation, encrypted account credentials, repository identity and metadata, full and incremental snapshots, native star-list authority, repository modes, authorized mutations, watches, analysis request/result linkage, desired Vault policy, and the seven-worker fleet-bus runtime are implemented and gated by CI. The runtime stores final envelope bytes transactionally, publishes with `Nats-Msg-Id` and persistence acknowledgement, resumes inbox leases, rejects poison deliveries terminally, and reports ready only with database, bus, exact topology, and all workers healthy. OAuth and the internet-facing product API remain incomplete.

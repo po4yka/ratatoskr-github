@@ -10,12 +10,15 @@ pub(crate) struct HttpResponse {
     pub(crate) body: String,
 }
 
-pub(crate) fn configured_command(
+pub(crate) async fn configured_command(
     admin_address: SocketAddr,
     api_address: SocketAddr,
     database_url: &str,
     provider_base_url: &str,
-) -> Command {
+) -> Result<Command, Box<dyn std::error::Error>> {
+    let nats_url = test_nats_url();
+    provision_bus(&nats_url).await?;
+    let seed_path = test_seed_path()?;
     let mut command = Command::new(env!("CARGO_BIN_EXE_ratatoskr-github-catalog"));
     command
         .env(
@@ -25,9 +28,61 @@ pub(crate) fn configured_command(
         .env("RATATOSKR__API__LISTEN_ADDRESS", api_address.to_string())
         .env("RATATOSKR__STORAGE__DATABASE_URL", database_url)
         .env("RATATOSKR__PROVIDER__BASE_URL", provider_base_url)
+        .env("RATATOSKR__BUS__URL", nats_url)
+        .env("RATATOSKR__BUS__NKEY_SEED_PATH", seed_path)
         .env("RATATOSKR__CREDENTIALS__ENCRYPTION_KEY_HEX", KEY_HEX)
         .env("RATATOSKR__CREDENTIALS__KEY_VERSION", "test-key");
-    command
+    Ok(command)
+}
+
+async fn provision_bus(url: &str) -> Result<(), Box<dyn std::error::Error>> {
+    let context = async_nats::jetstream::new(async_nats::connect(url).await?);
+    for (name, subjects) in [
+        ("ratatoskr_commands", vec!["cmd.>".to_owned()]),
+        ("ratatoskr_events", vec!["evt.>".to_owned()]),
+    ] {
+        context
+            .get_or_create_stream(async_nats::jetstream::stream::Config {
+                name: name.to_owned(),
+                subjects,
+                ..async_nats::jetstream::stream::Config::default()
+            })
+            .await?;
+    }
+    for spec in ratatoskr_github_catalog_service::CONSUMERS {
+        context
+            .get_stream(spec.stream)
+            .await?
+            .get_or_create_consumer(
+                spec.durable,
+                async_nats::jetstream::consumer::pull::Config {
+                    durable_name: Some(spec.durable.to_owned()),
+                    filter_subject: spec.subject.to_owned(),
+                    ack_policy: async_nats::jetstream::consumer::AckPolicy::Explicit,
+                    ack_wait: Duration::from_mins(2),
+                    max_deliver: 10,
+                    ..async_nats::jetstream::consumer::pull::Config::default()
+                },
+            )
+            .await?;
+    }
+    Ok(())
+}
+
+fn test_seed_path() -> Result<std::path::PathBuf, Box<dyn std::error::Error>> {
+    let path =
+        std::env::temp_dir().join(format!("ratatoskr-github-test-{}.nkey", std::process::id()));
+    std::fs::write(&path, nkeys::KeyPair::new_user().seed()?)?;
+    Ok(path)
+}
+
+#[expect(
+    clippy::disallowed_methods,
+    reason = "test-only broker location is not process configuration"
+)]
+fn test_nats_url() -> String {
+    std::env::var("GITHUB_CATALOG_TEST_NATS_URL")
+        .unwrap_or_else(|_| "nats://127.0.0.1:14227".to_owned())
 }
 
 pub(crate) fn wait_ready(

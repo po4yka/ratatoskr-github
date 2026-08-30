@@ -13,6 +13,7 @@
 //! here.
 
 use serde_json::Value;
+use time::{Duration, OffsetDateTime};
 use uuid::Uuid;
 
 use crate::database::{Database, PersistenceError};
@@ -22,6 +23,10 @@ use crate::provider::{GithubApi, ProviderError};
 use crate::rate_limit::{RateLimitLedger, TokenRef};
 use crate::snapshot::{FullSnapshotOutcome, SnapshotError, run_full_snapshot};
 use crate::star_lists::{StarListSnapshotOutcome, StarListsError, run_star_list_snapshot};
+use crate::{
+    CredentialError, CredentialKey, InboxClaimOutcome, InboxDelivery, claim_inbox_delivery,
+    complete_inbox_delivery, load_active_pat, retry_inbox_delivery,
+};
 
 /// The contract type this catalog consumes its own sync commands as,
 /// published by the platform scheduler to `cmd.` plus this name.
@@ -84,6 +89,9 @@ pub enum SyncCommandError {
     /// Persistence failed.
     #[error(transparent)]
     Persistence(#[from] PersistenceError),
+    /// The account-owned provider credential could not be loaded.
+    #[error(transparent)]
+    Credential(#[from] CredentialError),
     /// The provider exchange failed or was unclassifiable.
     #[error(transparent)]
     Provider(#[from] ProviderError),
@@ -96,12 +104,13 @@ pub enum SyncCommandError {
     /// The dispatched star-list snapshot flow failed.
     #[error(transparent)]
     StarLists(#[from] StarListsError),
+    /// Another live delivery owns the same non-terminal command claim.
+    #[error("command delivery is already processing")]
+    InProgress,
 }
 
 /// What strict envelope validation extracts for dispatch.
 struct ValidatedEnvelope {
-    /// The parsed envelope, stored verbatim as the inbox claim's payload.
-    raw: Value,
     /// The parseable command identity that keys the inbox claim.
     command_id: Uuid,
     /// The account owner reference the payload names.
@@ -134,24 +143,164 @@ where
     let validated = validate_envelope(envelope_json)?;
     let account_id = resolve_account(database, &validated.owner_ref).await?;
 
-    // Claim the delivery before dispatch so redelivery of the same identity
-    // can never run a second scan.
+    let lease_owner = Uuid::now_v7();
+    let now = OffsetDateTime::now_utc();
+    sqlx::query(
+        "insert into github_catalog.inbox_events
+             (message_id, subject, envelope, owner_ref, stream_name, consumer_name, stream_sequence,
+              delivery_count, state)
+         values ($1, 'cmd.github.sync.requested.v1', $2, $3, 'domain',
+                 'ratatoskr_github_sync',
+                 (select coalesce(max(stream_sequence), 0) + 1 from github_catalog.inbox_events),
+                 1, 'received')
+         on conflict (message_id) do nothing",
+    )
+    .bind(validated.command_id)
+    .bind(envelope_json.as_bytes())
+    .bind(&validated.owner_ref)
+    .execute(database.pool())
+    .await
+    .map_err(PersistenceError::Query)?;
     let claimed: Option<Uuid> = sqlx::query_scalar(
-        "insert into github_catalog.inbox_events (message_id, subject, payload)
-         values ($1, $2, $3)
-         on conflict (message_id) do nothing
+        "update github_catalog.inbox_events
+         set state = 'processing', lease_owner = $2,
+             lease_expires_at = $3 + interval '120 seconds',
+             attempt_count = attempt_count + 1,
+             delivery_count = case when attempt_count = 0 then delivery_count else delivery_count + 1 end
+         where message_id = $1
+           and (state in ('received', 'retryable')
+                or (state = 'processing' and lease_expires_at <= $3))
          returning message_id",
     )
     .bind(validated.command_id)
-    .bind(SYNC_REQUESTED_TYPE)
-    .bind(&validated.raw)
+    .bind(lease_owner)
+    .bind(now)
     .fetch_optional(database.pool())
     .await
     .map_err(PersistenceError::Query)?;
     if claimed.is_none() {
-        return Ok(ConsumedSyncCommand::Duplicate);
+        let state: String = sqlx::query_scalar(
+            "select state from github_catalog.inbox_events where message_id = $1",
+        )
+        .bind(validated.command_id)
+        .fetch_one(database.pool())
+        .await
+        .map_err(PersistenceError::Query)?;
+        return if matches!(state.as_str(), "consumed" | "rejected") {
+            Ok(ConsumedSyncCommand::Duplicate)
+        } else {
+            Err(SyncCommandError::InProgress)
+        };
     }
 
+    let result = dispatch_sync(database, gateway, ledger, token, &validated, account_id).await;
+    let handled = match result {
+        Ok(handled) => handled,
+        Err(error) => {
+            sqlx::query(
+                "update github_catalog.inbox_events
+                 set state = 'retryable', lease_owner = null, lease_expires_at = null,
+                     next_attempt_at = now(), failure_code = 'sync_iteration_failed'
+                 where message_id = $1 and lease_owner = $2",
+            )
+            .bind(validated.command_id)
+            .bind(lease_owner)
+            .execute(database.pool())
+            .await
+            .map_err(PersistenceError::Query)?;
+            return Err(error);
+        }
+    };
+    sqlx::query(
+        "update github_catalog.inbox_events
+         set state = 'consumed', terminal_outcome = 'handled', consumed_at = now(),
+             lease_owner = null, lease_expires_at = null, failure_code = null
+         where message_id = $1 and lease_owner = $2",
+    )
+    .bind(validated.command_id)
+    .bind(lease_owner)
+    .execute(database.pool())
+    .await
+    .map_err(PersistenceError::Query)?;
+    Ok(ConsumedSyncCommand::Handled(handled))
+}
+
+/// Consumes one broker delivery with a fresh account-owned credential and resumable inbox lease.
+///
+/// The exact broker bytes and transport coordinates are committed before provider work starts.
+/// A transient provider or persistence failure releases the claim as retryable; only a committed
+/// domain outcome makes the inbox identity terminal.
+///
+/// # Errors
+///
+/// Returns [`SyncCommandError`] for invalid identity, credential, provider, domain, or persistence
+/// failures. A live claim held by another delivery returns [`SyncCommandError::InProgress`].
+pub async fn handle_authenticated_sync_delivery(
+    database: &Database,
+    provider_base_url: &str,
+    credential_key: &CredentialKey,
+    delivery: &InboxDelivery<'_>,
+    lease_duration: Duration,
+    retry_delay: Duration,
+) -> Result<ConsumedSyncCommand, SyncCommandError> {
+    let envelope_json = std::str::from_utf8(delivery.envelope)
+        .map_err(|_| SyncCommandError::Invalid("the envelope is not valid UTF-8 JSON"))?;
+    let validated = validate_envelope(envelope_json)?;
+    if validated.command_id != delivery.message_id {
+        return Err(SyncCommandError::Invalid(
+            "command identity differs from the transport identity",
+        ));
+    }
+    let account_id = resolve_account(database, &validated.owner_ref).await?;
+    let now = OffsetDateTime::now_utc();
+    let lease_owner = match claim_inbox_delivery(database, delivery, now, lease_duration).await? {
+        InboxClaimOutcome::Claimed { lease_owner } => lease_owner,
+        InboxClaimOutcome::TerminalDuplicate => return Ok(ConsumedSyncCommand::Duplicate),
+        InboxClaimOutcome::Busy => return Err(SyncCommandError::InProgress),
+    };
+    let result = async {
+        let credential = load_active_pat(database, account_id, credential_key).await?;
+        let gateway = crate::provider::ReqwestGithubApi::for_base_url(provider_base_url)?
+            .authenticated(credential);
+        let ledger = RateLimitLedger::new();
+        let token = TokenRef::from_label(account_id.to_string());
+        dispatch_sync(database, &gateway, &ledger, &token, &validated, account_id).await
+    }
+    .await;
+    match result {
+        Ok(handled) => {
+            complete_inbox_delivery(
+                database,
+                delivery.message_id,
+                lease_owner,
+                "handled",
+                OffsetDateTime::now_utc(),
+            )
+            .await?;
+            Ok(ConsumedSyncCommand::Handled(handled))
+        }
+        Err(error) => {
+            retry_inbox_delivery(
+                database,
+                delivery.message_id,
+                lease_owner,
+                "sync_iteration_failed",
+                OffsetDateTime::now_utc() + retry_delay,
+            )
+            .await?;
+            Err(error)
+        }
+    }
+}
+
+async fn dispatch_sync<G: GithubApi>(
+    database: &Database,
+    gateway: &G,
+    ledger: &RateLimitLedger,
+    token: &TokenRef,
+    validated: &ValidatedEnvelope,
+    account_id: Uuid,
+) -> Result<HandledSyncCommand, SyncCommandError> {
     let mut handled = HandledSyncCommand {
         command_id: validated.command_id,
         account_id,
@@ -189,16 +338,7 @@ where
     handled.star_lists =
         Some(run_star_list_snapshot(database, gateway, ledger, token, account_id).await?);
 
-    sqlx::query(
-        "update github_catalog.inbox_events set consumed_at = now()
-         where message_id = $1",
-    )
-    .bind(validated.command_id)
-    .execute(database.pool())
-    .await
-    .map_err(PersistenceError::Query)?;
-
-    Ok(ConsumedSyncCommand::Handled(handled))
+    Ok(handled)
 }
 
 /// Parses one delivered envelope against the grammar this service consumes,
@@ -261,7 +401,6 @@ fn validate_envelope(envelope_json: &str) -> Result<ValidatedEnvelope, SyncComma
     let requested_mode = requested_mode(payload)?;
 
     Ok(ValidatedEnvelope {
-        raw: envelope.clone(),
         command_id,
         owner_ref: owner_ref.to_owned(),
         requested_mode,

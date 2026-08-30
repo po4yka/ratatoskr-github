@@ -10,9 +10,10 @@ use ratatoskr_identifiers::{EntityRef, Extensions, WireTimestamp};
 use time::{Duration, OffsetDateTime};
 use uuid::Uuid;
 
+use crate::{InboxClaimOutcome, InboxDelivery, claim_inbox_delivery};
+
 /// The trailing delay used to coalesce catalog changes into one publication.
 pub const POLICY_DEBOUNCE: Duration = Duration::seconds(60);
-const DESIRED_SUBJECT: &str = "cmd.vault.target.desired.v1";
 const ACKNOWLEDGED_SUBJECT: &str = "evt.vault.backup_policy.acknowledged.v1";
 
 /// One catalog entry considered while deriving the mirror policy.
@@ -192,15 +193,18 @@ pub async fn publish_due_backup_policy(
     let policy = derive_backup_policy(version, &inputs)?;
     let payload = serde_json::to_value(&policy).map_err(BackupPolicyError::Serialization)?;
     sqlx::query("insert into github_catalog.backup_policy_publications (policy_version, fingerprint, document) values ($1,$2,$3)").bind(i64::try_from(version).map_err(|_|invalid("policy_version"))?).bind(&fingerprint).bind(&payload).execute(&mut *tx).await.map_err(PersistenceError::Query)?;
-    sqlx::query(
-        "insert into github_catalog.outbox_events (message_id, subject, payload) values ($1,$2,$3)",
+    let message_id = Uuid::now_v7();
+    let envelope = crate::outbox::policy_command_bytes(message_id, &policy)
+        .map_err(BackupPolicyError::Serialization)?;
+    crate::outbox::insert(
+        &mut tx,
+        message_id,
+        crate::outbox::POLICY_SUBJECT,
+        &envelope,
+        "vault-policy:catalog",
+        None,
     )
-    .bind(Uuid::now_v7())
-    .bind(DESIRED_SUBJECT)
-    .bind(payload)
-    .execute(&mut *tx)
-    .await
-    .map_err(PersistenceError::Query)?;
+    .await?;
     settle(
         &mut tx,
         cursor.0,
@@ -221,13 +225,13 @@ pub async fn record_backup_policy_acknowledgment(
     message_id: Uuid,
     ack: &PolicyAcknowledged,
 ) -> Result<FeedbackOutcome, BackupPolicyError> {
-    let payload = serde_json::to_value(ack).map_err(BackupPolicyError::Serialization)?;
+    let envelope = serde_json::to_vec(ack).map_err(BackupPolicyError::Serialization)?;
     let mut tx = database
         .pool()
         .begin()
         .await
         .map_err(PersistenceError::Query)?;
-    let inserted=sqlx::query("insert into github_catalog.inbox_events (message_id,subject,payload) values ($1,$2,$3) on conflict do nothing").bind(message_id).bind(ACKNOWLEDGED_SUBJECT).bind(&payload).execute(&mut *tx).await.map_err(PersistenceError::Query)?.rows_affected();
+    let inserted=sqlx::query("insert into github_catalog.inbox_events (message_id,subject,envelope,stream_name,consumer_name,stream_sequence,delivery_count,state) values ($1,$2,$3,'domain',$2,(select coalesce(max(stream_sequence),0)+1 from github_catalog.inbox_events),1,'processing') on conflict do nothing").bind(message_id).bind(ACKNOWLEDGED_SUBJECT).bind(&envelope).execute(&mut *tx).await.map_err(PersistenceError::Query)?.rows_affected();
     if inserted == 0 {
         tx.commit().await.map_err(PersistenceError::Query)?;
         return Ok(FeedbackOutcome::Duplicate);
@@ -238,11 +242,88 @@ pub async fn record_backup_policy_acknowledgment(
         _ => return Err(invalid("outcome")),
     };
     sqlx::query("insert into github_catalog.backup_policy_feedback (message_id,acknowledged_policy_version,outcome,last_applied_policy_version,reasons) values ($1,$2,$3,$4,$5)").bind(message_id).bind(i64::try_from(ack.acknowledged_policy_version).map_err(|_|invalid("acknowledged_policy_version"))?).bind(outcome).bind(i64::try_from(ack.last_applied_policy_version).map_err(|_|invalid("last_applied_policy_version"))?).bind(serde_json::to_value(&ack.reasons).map_err(BackupPolicyError::Serialization)?).execute(&mut *tx).await.map_err(PersistenceError::Query)?;
-    sqlx::query("update github_catalog.inbox_events set consumed_at=now() where message_id=$1")
+    sqlx::query("update github_catalog.inbox_events set state='consumed',terminal_outcome='acknowledged',consumed_at=now() where message_id=$1")
         .bind(message_id)
         .execute(&mut *tx)
         .await
         .map_err(PersistenceError::Query)?;
+    tx.commit().await.map_err(PersistenceError::Query)?;
+    Ok(FeedbackOutcome::Recorded)
+}
+
+/// Records one exact Vault acknowledgment delivery under a resumable inbox lease.
+///
+/// The projection and terminal inbox state commit together. A broker acknowledgement may only be
+/// sent after this function returns successfully.
+///
+/// # Errors
+///
+/// Returns [`BackupPolicyError`] when the delivery is already processing or persistence fails.
+pub async fn record_backup_policy_acknowledgment_delivery(
+    database: &Database,
+    delivery: &InboxDelivery<'_>,
+    ack: &PolicyAcknowledged,
+    now: OffsetDateTime,
+    lease_duration: Duration,
+) -> Result<FeedbackOutcome, BackupPolicyError> {
+    let outcome = match ack.outcome {
+        PolicyOutcome::Accepted => "accepted",
+        PolicyOutcome::Rejected => "rejected",
+        _ => return Err(invalid("outcome")),
+    };
+    let lease_owner = match claim_inbox_delivery(database, delivery, now, lease_duration).await? {
+        InboxClaimOutcome::Claimed { lease_owner } => lease_owner,
+        InboxClaimOutcome::TerminalDuplicate => return Ok(FeedbackOutcome::Duplicate),
+        InboxClaimOutcome::Busy => {
+            return Err(PersistenceError::Query(sqlx::Error::Protocol(
+                "inbox delivery is already processing".to_owned(),
+            ))
+            .into());
+        }
+    };
+    let mut tx = database
+        .pool()
+        .begin()
+        .await
+        .map_err(PersistenceError::Query)?;
+    sqlx::query(
+        "insert into github_catalog.backup_policy_feedback
+             (message_id,acknowledged_policy_version,outcome,last_applied_policy_version,reasons)
+         values ($1,$2,$3,$4,$5) on conflict (message_id) do nothing",
+    )
+    .bind(delivery.message_id)
+    .bind(
+        i64::try_from(ack.acknowledged_policy_version)
+            .map_err(|_| invalid("acknowledged_policy_version"))?,
+    )
+    .bind(outcome)
+    .bind(
+        i64::try_from(ack.last_applied_policy_version)
+            .map_err(|_| invalid("last_applied_policy_version"))?,
+    )
+    .bind(serde_json::to_value(&ack.reasons).map_err(BackupPolicyError::Serialization)?)
+    .execute(&mut *tx)
+    .await
+    .map_err(PersistenceError::Query)?;
+    let changed = sqlx::query(
+        "update github_catalog.inbox_events
+         set state='consumed',terminal_outcome='acknowledged',consumed_at=$3,
+             lease_owner=null,lease_expires_at=null,failure_code=null
+         where message_id=$1 and lease_owner=$2 and state='processing'",
+    )
+    .bind(delivery.message_id)
+    .bind(lease_owner)
+    .bind(now)
+    .execute(&mut *tx)
+    .await
+    .map_err(PersistenceError::Query)?
+    .rows_affected();
+    if changed != 1 {
+        return Err(PersistenceError::Query(sqlx::Error::Protocol(
+            "inbox lease is not owned".to_owned(),
+        ))
+        .into());
+    }
     tx.commit().await.map_err(PersistenceError::Query)?;
     Ok(FeedbackOutcome::Recorded)
 }

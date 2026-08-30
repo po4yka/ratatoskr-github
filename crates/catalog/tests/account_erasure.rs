@@ -115,17 +115,10 @@ async fn insert_owner_event_state(
     database: &TestDatabase,
     owner_ref: &str,
 ) -> Result<(), sqlx::Error> {
-    for table in ["outbox_events", "inbox_events"] {
-        let statement = format!(
-            "insert into github_catalog.{table} (message_id, subject, payload)
-             values ($1, 'github.sync.requested.v1', jsonb_build_object('account', $2))"
-        );
-        sqlx::query(&statement)
-            .bind(Uuid::now_v7())
-            .bind(owner_ref)
-            .execute(database.database.pool())
-            .await?;
-    }
+    sqlx::query("insert into github_catalog.outbox_events (message_id,subject,envelope,owner_ref,ordering_key,ordering_sequence) values ($1,'evt.knowledge.repository_analysis.requested.v1','{}'::text::bytea,$2,$2,1)")
+        .bind(Uuid::now_v7()).bind(owner_ref).execute(database.database.pool()).await?;
+    sqlx::query("insert into github_catalog.inbox_events (message_id,subject,envelope,owner_ref,stream_name,consumer_name,stream_sequence,delivery_count) values ($1,'cmd.github.sync.requested.v1','{}'::text::bytea,$2,'ratatoskr_commands','ratatoskr_github_sync',1,1)")
+        .bind(Uuid::now_v7()).bind(owner_ref).execute(database.database.pool()).await?;
     Ok(())
 }
 
@@ -134,8 +127,7 @@ async fn assert_owner_event_state_absent(
     owner_ref: &str,
 ) -> Result<(), sqlx::Error> {
     for table in ["outbox_events", "inbox_events"] {
-        let statement =
-            format!("select count(*) from github_catalog.{table} where payload ->> 'account' = $1");
+        let statement = format!("select count(*) from github_catalog.{table} where owner_ref = $1");
         let remaining: i64 = sqlx::query_scalar(&statement)
             .bind(owner_ref)
             .fetch_one(database.database.pool())

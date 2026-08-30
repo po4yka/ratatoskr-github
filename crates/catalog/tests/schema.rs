@@ -4,6 +4,86 @@ use ratatoskr_github_catalog::test_support::TestDatabase;
 use sqlx::Row as _;
 use uuid::Uuid;
 
+#[tokio::test]
+async fn bus_tables_store_classified_envelopes_and_recovery_state()
+-> Result<(), Box<dyn std::error::Error>> {
+    let database = TestDatabase::create().await?;
+    let columns: Vec<(String, String)> = sqlx::query_as(
+        "select table_name, column_name from information_schema.columns
+         where table_schema = 'github_catalog'
+           and table_name in ('outbox_events', 'inbox_events')
+         order by table_name, ordinal_position",
+    )
+    .fetch_all(database.database.pool())
+    .await?;
+    let names = columns
+        .into_iter()
+        .map(|(table, column)| format!("{table}.{column}"))
+        .collect::<Vec<_>>();
+    for required in [
+        "outbox_events.envelope",
+        "outbox_events.ordering_key",
+        "outbox_events.ordering_sequence",
+        "outbox_events.lease_owner",
+        "outbox_events.lease_expires_at",
+        "outbox_events.attempt_count",
+        "outbox_events.next_attempt_at",
+        "outbox_events.dead_lettered_at",
+        "outbox_events.failure_code",
+        "inbox_events.stream_name",
+        "inbox_events.consumer_name",
+        "inbox_events.stream_sequence",
+        "inbox_events.delivery_count",
+        "inbox_events.state",
+        "inbox_events.lease_owner",
+        "inbox_events.lease_expires_at",
+        "inbox_events.attempt_count",
+        "inbox_events.terminal_outcome",
+        "inbox_events.failure_code",
+    ] {
+        assert!(
+            names.iter().any(|name| name == required),
+            "missing {required}"
+        );
+    }
+
+    let constraints: Vec<String> = sqlx::query_scalar(
+        "select pg_get_constraintdef(oid) from pg_constraint
+         where connamespace = 'github_catalog'::regnamespace
+           and conname in ('outbox_subject_is_known', 'inbox_subject_is_known')
+         order by conname",
+    )
+    .fetch_all(database.database.pool())
+    .await?;
+    let joined = constraints.join("\n");
+    for subject in [
+        "cmd.github.sync.requested.v1",
+        "evt.knowledge.repository_analysis.completed.v1",
+        "evt.knowledge.repository_analysis.failed.v1",
+        "evt.vault.backup_policy.acknowledged.v1",
+        "evt.knowledge.repository_analysis.requested.v1",
+        "cmd.vault.target.desired.v1",
+    ] {
+        assert!(
+            joined.contains(subject),
+            "missing classified subject {subject}"
+        );
+    }
+    for legacy in [
+        "github.sync.requested.v1",
+        "knowledge.repository_analysis.requested.v1",
+        "knowledge.repository_analysis.completed.v1",
+        "knowledge.repository_analysis.failed.v1",
+    ] {
+        assert!(
+            !joined.contains(&format!("'{legacy}'")),
+            "legacy subject remains: {legacy}"
+        );
+    }
+    database.cleanup().await?;
+    Ok(())
+}
+
 /// A demoted list membership and a removed list each carry their removal
 /// evidence; neither state is representable without it.
 async fn assert_list_authority_carries_removal_evidence(

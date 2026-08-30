@@ -2,6 +2,36 @@
 
 use std::process::Command;
 
+use ratatoskr_github_catalog_service::{OperatorCommand, parse_operator_command};
+use uuid::Uuid;
+
+#[test]
+fn dead_letter_requeue_accepts_only_one_exact_message_identity() {
+    let message_id = Uuid::now_v7();
+    assert_eq!(
+        parse_operator_command([
+            "catalog".to_owned(),
+            "requeue-dead-letter".to_owned(),
+            "--message-id".to_owned(),
+            message_id.to_string(),
+        ])
+        .expect("exact command"),
+        OperatorCommand::RequeueDeadLetter {
+            message_id: message_id.to_string(),
+        }
+    );
+    assert!(
+        parse_operator_command([
+            "catalog".to_owned(),
+            "requeue-dead-letter".to_owned(),
+            "--message-id".to_owned(),
+            message_id.to_string(),
+            "extra".to_owned(),
+        ])
+        .is_err()
+    );
+}
+
 #[test]
 fn legacy_commands_reject_secret_bearing_arguments_and_unapproved_activation()
 -> Result<(), Box<dyn std::error::Error>> {

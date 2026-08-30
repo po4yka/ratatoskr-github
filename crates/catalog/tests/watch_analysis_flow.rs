@@ -134,7 +134,7 @@ async fn metadata_delta_queues_and_dispatches_one_analysis_request()
     );
     let requested: i64 = sqlx::query_scalar(
         "select count(*) from github_catalog.outbox_events
-         where subject = 'knowledge.repository_analysis.requested.v1'",
+         where subject = 'evt.knowledge.repository_analysis.requested.v1'",
     )
     .fetch_one(database.database.pool())
     .await?;
@@ -200,14 +200,15 @@ async fn matching_completion_resolves_the_pending_request_once()
     else {
         return Err("one queued request must dispatch".into());
     };
-    let payload: serde_json::Value = sqlx::query_scalar(
-        "select payload from github_catalog.outbox_events
-         where subject = 'knowledge.repository_analysis.requested.v1'",
+    let envelope_bytes: Vec<u8> = sqlx::query_scalar(
+        "select envelope from github_catalog.outbox_events
+         where subject = 'evt.knowledge.repository_analysis.requested.v1'",
     )
     .fetch_one(database.database.pool())
     .await?;
-    let request: ratatoskr_github_contracts::RepositoryAnalysisRequested =
-        serde_json::from_value(payload)?;
+    let envelope = ratatoskr_event_envelope::EventEnvelope::from_json(&envelope_bytes)?;
+    let request =
+        envelope.payload_as::<ratatoskr_github_contracts::RepositoryAnalysisRequested>()?;
     let result = EntityRef::parse("analysis:018f0000-0000-7000-8000-000000000904")?;
     let completion = RepositoryAnalysisCompleted {
         owner: request.owner,

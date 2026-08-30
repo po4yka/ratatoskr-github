@@ -427,7 +427,7 @@ async fn valid_envelope_dispatches_incremental_scan_and_records_inbox()
         inbox_row.0, handled.command_id,
         "the claim keys on the command identity"
     );
-    assert_eq!(inbox_row.1.as_deref(), Some("github.sync.requested.v1"));
+    assert_eq!(inbox_row.1.as_deref(), Some("cmd.github.sync.requested.v1"));
     assert!(
         inbox_row.2,
         "a handled command carries its consumption time"

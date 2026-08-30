@@ -54,6 +54,7 @@ async fn preview_returns_bounded_metadata_without_catalog_writes()
     drop(reserved_admin);
     drop(reserved_api);
     let mut child = configured_command(admin_address, api_address, &database_url, &provider.uri())
+        .await?
         .stdout(Stdio::null())
         .stderr(Stdio::null())
         .spawn()?;
@@ -131,6 +132,7 @@ async fn preview_refuses_foreign_private_and_subresource_urls_before_disclosure(
     drop(reserved_admin);
     drop(reserved_api);
     let mut child = configured_command(admin_address, api_address, &database_url, &provider.uri())
+        .await?
         .stdout(Stdio::null())
         .stderr(Stdio::null())
         .spawn()?;
@@ -198,6 +200,7 @@ async fn action_refuses_missing_confirmation_foreign_account_and_unsupported_mod
     drop(reserved_admin);
     drop(reserved_api);
     let mut child = configured_command(admin_address, api_address, &database_url, &provider.uri())
+        .await?
         .stdout(Stdio::null())
         .stderr(Stdio::null())
         .spawn()?;
@@ -303,6 +306,7 @@ async fn metadata_and_track_never_call_provider_star() -> Result<(), Box<dyn std
     drop(reserved_admin);
     drop(reserved_api);
     let mut child = configured_command(admin_address, api_address, &database_url, &provider.uri())
+        .await?
         .stdout(Stdio::null())
         .stderr(Stdio::null())
         .spawn()?;
@@ -468,6 +472,7 @@ async fn provider_star_success_survives_later_persistence_failure_without_unstar
     drop(reserved_admin);
     drop(reserved_api);
     let mut child = configured_command(admin_address, api_address, &database_url, &provider.uri())
+        .await?
         .stdout(Stdio::null())
         .stderr(Stdio::null())
         .spawn()?;
@@ -585,6 +590,7 @@ async fn provider_refusal_skips_dependent_policy_without_fabricated_success()
     drop(reserved_admin);
     drop(reserved_api);
     let mut child = configured_command(admin_address, api_address, &database_url, &provider.uri())
+        .await?
         .stdout(Stdio::null())
         .stderr(Stdio::null())
         .spawn()?;
@@ -701,6 +707,7 @@ async fn exact_action_replay_returns_recorded_truth_and_conflicting_reuse_is_ref
     drop(reserved_admin);
     drop(reserved_api);
     let mut child = configured_command(admin_address, api_address, &database_url, &provider.uri())
+        .await?
         .stdout(Stdio::null())
         .stderr(Stdio::null())
         .spawn()?;

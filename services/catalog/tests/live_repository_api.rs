@@ -109,6 +109,7 @@ async fn real_service_serves_preview_and_partial_action_against_fake_provider()
     drop(reserved_admin);
     drop(reserved_api);
     let mut child = configured_command(admin_address, api_address, &database_url, &provider.uri())
+        .await?
         .stdout(Stdio::null())
         .stderr(Stdio::null())
         .spawn()?;

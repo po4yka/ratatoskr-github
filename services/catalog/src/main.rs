@@ -3,7 +3,6 @@
 
 //! Ratatoskr GitHub Catalog service process.
 
-use std::future::IntoFuture as _;
 use std::io::Read as _;
 use std::io::Write as _;
 use std::time::Duration;
@@ -15,11 +14,11 @@ use ratatoskr_github_catalog::{
     LegacyShadowError, LegacySource, LegacySourceError, VerifiedGithubAccount,
     generate_legacy_shadow_report, import_legacy_snapshot, init_telemetry,
     legacy_cutover_readiness, legacy_shadow_account_ids, load_active_pat, register_pat,
-    run_full_snapshot, run_star_list_snapshot,
+    requeue_dead_letter, run_full_snapshot, run_star_list_snapshot,
 };
 use ratatoskr_github_catalog_service::{
     Lifecycle, OperatorCommand, OperatorCommandError, RepositoryApiState, admin_router,
-    domain_router, parse_operator_command,
+    domain_router, parse_operator_command, run_fleet_bus_runtime,
 };
 use secrecy::{ExposeSecret as _, SecretString};
 use uuid::Uuid;
@@ -42,6 +41,9 @@ enum ProcessError {
     /// The account identifier was malformed.
     #[error("operator account identifier is invalid")]
     AccountIdentifier,
+    /// The outbox message identifier was malformed.
+    #[error("operator outbox message identifier is invalid")]
+    MessageIdentifier,
     /// Standard input could not provide a replacement PAT.
     #[error("replacement PAT input was unavailable")]
     PatInput(#[source] std::io::Error),
@@ -84,6 +86,9 @@ enum ProcessError {
     /// A service listener failed while serving.
     #[error("a service listener failed")]
     Serve(#[source] std::io::Error),
+    /// The supervised fleet-bus runtime failed.
+    #[error("the fleet-bus runtime failed: {0}")]
+    Runtime(#[from] ratatoskr_github_catalog_service::RuntimeError),
 }
 
 #[tokio::main]
@@ -98,7 +103,7 @@ async fn run() -> Result<(), ProcessError> {
     let command = parse_operator_command(std::env::args())?;
     let config = Config::load()?;
     match command {
-        OperatorCommand::CheckConfig => Ok(()),
+        OperatorCommand::CheckConfig => config.validate_for_serving().map_err(ProcessError::Config),
         OperatorCommand::ReconnectPat { account_id } => {
             register_replacement_pat(&config, &account_id).await
         }
@@ -110,8 +115,22 @@ async fn run() -> Result<(), ProcessError> {
         OperatorCommand::CutoverReadiness { source_id } => {
             cutover_readiness(&config, &source_id).await
         }
-        OperatorCommand::Serve => serve(config).await,
+        OperatorCommand::Serve => {
+            config.validate_for_serving()?;
+            serve(config).await
+        }
+        OperatorCommand::RequeueDeadLetter { message_id } => {
+            requeue_outbox_dead_letter(&config, &message_id).await
+        }
     }
+}
+
+async fn requeue_outbox_dead_letter(config: &Config, message_id: &str) -> Result<(), ProcessError> {
+    let message_id = Uuid::parse_str(message_id).map_err(|_| ProcessError::MessageIdentifier)?;
+    let database = connect_database(config).await?;
+    let result = requeue_dead_letter(&database, message_id, time::OffsetDateTime::now_utc()).await;
+    database.close().await;
+    result.map_err(ProcessError::Database)
 }
 
 async fn cutover_readiness(config: &Config, source_id: &str) -> Result<(), ProcessError> {
@@ -232,14 +251,16 @@ async fn serve(config: Config) -> Result<(), ProcessError> {
         provider,
         config.credentials.encryption_key().ok(),
     );
-    lifecycle.mark_ready();
+    lifecycle.mark_database_ready();
+    let shutdown_timeout = Duration::from_millis(config.limits.shutdown_timeout_ms);
     serve_listeners(
         admin_listener,
         api_listener,
         repository_api,
         lifecycle,
         database,
-        Duration::from_millis(config.limits.shutdown_timeout_ms),
+        config,
+        shutdown_timeout,
     )
     .await
 }
@@ -307,46 +328,74 @@ async fn serve_listeners(
     repository_api: RepositoryApiState,
     lifecycle: Lifecycle,
     database: Database,
+    config: Config,
     shutdown_timeout: Duration,
 ) -> Result<(), ProcessError> {
     let (shutdown_tx, shutdown_rx) = tokio::sync::watch::channel(false);
     let admin_shutdown = shutdown_rx.clone();
-    let api_shutdown = shutdown_rx;
-    let admin_server = axum::serve(admin_listener, admin_router(lifecycle.clone()))
-        .with_graceful_shutdown(wait_for_shutdown(admin_shutdown))
-        .into_future();
-    let api_server = axum::serve(api_listener, domain_router(repository_api))
-        .with_graceful_shutdown(wait_for_shutdown(api_shutdown))
-        .into_future();
-    tokio::pin!(admin_server);
-    tokio::pin!(api_server);
-    let outcome = tokio::select! {
-        result = &mut admin_server => {
-            let _ignored = shutdown_tx.send(true);
-            let peer = api_server.await;
-            result.and(peer)
-        }
-        result = &mut api_server => {
-            let _ignored = shutdown_tx.send(true);
-            let peer = admin_server.await;
-            result.and(peer)
-        }
-        result = shutdown_signal() => {
-            result.map_err(ProcessError::Serve)?;
-            lifecycle.begin_drain();
-            let _ignored = shutdown_tx.send(true);
-            tokio::time::timeout(shutdown_timeout, async {
-                let (admin, api) = tokio::join!(&mut admin_server, &mut api_server);
-                admin.and(api)
-            })
+    let api_shutdown = shutdown_rx.clone();
+    let runtime_shutdown = shutdown_rx;
+    let mut components = tokio::task::JoinSet::new();
+    let admin_lifecycle = lifecycle.clone();
+    components.spawn(async move {
+        axum::serve(admin_listener, admin_router(admin_lifecycle))
+            .with_graceful_shutdown(wait_for_shutdown(admin_shutdown))
             .await
-            .map_err(|_| ProcessError::Serve(std::io::Error::other(
-                "service listeners did not stop within the shutdown bound",
-            )))?
-        }
+            .map_err(ProcessError::Serve)
+    });
+    components.spawn(async move {
+        axum::serve(api_listener, domain_router(repository_api))
+            .with_graceful_shutdown(wait_for_shutdown(api_shutdown))
+            .await
+            .map_err(ProcessError::Serve)
+    });
+    let runtime_database = database.clone();
+    let runtime_lifecycle = lifecycle.clone();
+    components.spawn(async move {
+        run_fleet_bus_runtime(
+            config,
+            runtime_database,
+            runtime_lifecycle,
+            runtime_shutdown,
+        )
+        .await
+        .map_err(ProcessError::Runtime)
+    });
+    let first_outcome = tokio::select! {
+        joined = components.join_next() => component_outcome(joined),
+        result = shutdown_signal() => result.map_err(ProcessError::Serve),
     };
+    lifecycle.begin_drain();
+    let _ignored = shutdown_tx.send(true);
+    let drain_outcome = tokio::time::timeout(shutdown_timeout, async {
+        let mut outcome = Ok(());
+        while let Some(joined) = components.join_next().await {
+            if outcome.is_ok() {
+                outcome = component_outcome(Some(joined));
+            }
+        }
+        outcome
+    })
+    .await
+    .map_err(|_| {
+        ProcessError::Serve(std::io::Error::other(
+            "service components did not stop within the shutdown bound",
+        ))
+    })?;
     database.close().await;
-    outcome.map_err(ProcessError::Serve)
+    first_outcome.and(drain_outcome)
+}
+
+fn component_outcome(
+    joined: Option<Result<Result<(), ProcessError>, tokio::task::JoinError>>,
+) -> Result<(), ProcessError> {
+    match joined {
+        Some(Ok(result)) => result,
+        Some(Err(error)) => Err(ProcessError::Serve(std::io::Error::other(error))),
+        None => Err(ProcessError::Serve(std::io::Error::other(
+            "all service components stopped unexpectedly",
+        ))),
+    }
 }
 
 async fn wait_for_shutdown(mut receiver: tokio::sync::watch::Receiver<bool>) {

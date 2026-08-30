@@ -3,6 +3,42 @@
 use ratatoskr_github_catalog::Config;
 
 #[test]
+fn serving_bus_configuration_is_complete_finite_and_redacted() {
+    let seed_path = "/run/credentials/ratatoskr-github/github.nkey";
+    let configured = Config::from_environment([
+        ("RATATOSKR__BUS__URL", "nats://127.0.0.1:4222"),
+        ("RATATOSKR__BUS__NKEY_SEED_PATH", seed_path),
+        ("RATATOSKR__BUS__CONNECT_TIMEOUT_MS", "5000"),
+        ("RATATOSKR__BUS__PUBLISH_ACK_TIMEOUT_MS", "5000"),
+        ("RATATOSKR__BUS__POLL_INTERVAL_MS", "250"),
+        ("RATATOSKR__BUS__LEASE_MS", "30000"),
+        ("RATATOSKR__BUS__BATCH_SIZE", "16"),
+        ("RATATOSKR__BUS__MAX_ATTEMPTS", "10"),
+        ("RATATOSKR__BUS__WORKER_JOIN_TIMEOUT_MS", "120000"),
+    ])
+    .expect("complete finite bus configuration");
+    let serialized = serde_json::to_string(&configured).unwrap_or_default();
+    let debug = format!("{configured:?}");
+    assert!(!serialized.contains(seed_path));
+    assert!(!debug.contains(seed_path));
+}
+
+#[test]
+fn serving_bus_configuration_refuses_unbounded_limits() {
+    for (key, value) in [
+        ("RATATOSKR__BUS__CONNECT_TIMEOUT_MS", "30001"),
+        ("RATATOSKR__BUS__BATCH_SIZE", "257"),
+        ("RATATOSKR__BUS__MAX_ATTEMPTS", "101"),
+        ("RATATOSKR__LIMITS__SHUTDOWN_TIMEOUT_MS", "120000"),
+    ] {
+        assert!(
+            Config::from_environment([(key, value)]).is_err(),
+            "unbounded setting was accepted: {key}"
+        );
+    }
+}
+
+#[test]
 fn defaults_are_finite_and_loopback() {
     let config = Config::default();
 
@@ -166,6 +202,7 @@ fn recognized_overrides_change_exactly_their_own_field() {
             "RATATOSKR__STORAGE__DATABASE_URL",
             "postgres://github:github@127.0.0.1:5435/github",
         ),
+        ("RATATOSKR__BUS__WORKER_JOIN_TIMEOUT_MS", "20000"),
         ("RATATOSKR__LIMITS__SHUTDOWN_TIMEOUT_MS", "25000"),
     ])
     .expect("recognized keys must load");

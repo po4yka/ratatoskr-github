@@ -6,7 +6,8 @@
 )]
 
 use ratatoskr_backup_contracts::{
-    PolicyAcknowledged, PolicyOutcome, PolicyRejectionCode, PolicyRejectionReason,
+    DesiredBackupPolicy, PolicyAcknowledged, PolicyOutcome, PolicyRejectionCode,
+    PolicyRejectionReason,
 };
 use ratatoskr_github_catalog::{
     BackupPolicyInput, FeedbackOutcome, PublicationOutcome, derive_backup_policy,
@@ -58,9 +59,19 @@ async fn published_policy_versions_advance_only_when_derived_state_changes() {
             .expect("first"),
         PublicationOutcome::Published { policy_version: 1 }
     );
-    let exclusions: serde_json::Value = sqlx::query_scalar("select payload->'repositories'->0->'exclusions' from github_catalog.outbox_events where subject = 'cmd.vault.target.desired.v1'")
-        .fetch_one(fixture.database.pool()).await.expect("published exclusions");
-    assert_eq!(exclusions[0]["expression"], "refs/heads/scratch/*");
+    let (message_id, envelope_bytes): (Uuid, Vec<u8>) = sqlx::query_as("select message_id,envelope from github_catalog.outbox_events where subject = 'cmd.vault.target.desired.v1'")
+        .fetch_one(fixture.database.pool()).await.expect("published command");
+    let envelope = ratatoskr_event_envelope::CommandEnvelope::from_json(&envelope_bytes)
+        .expect("canonical command envelope");
+    assert_eq!(envelope.command_id.to_string(), message_id.to_string());
+    assert_eq!(envelope.command_type.to_wire(), "vault.target.desired.v1");
+    let policy: DesiredBackupPolicy =
+        serde_json::from_value(serde_json::Value::Object(envelope.payload))
+            .expect("typed desired policy");
+    assert_eq!(
+        policy.repositories[0].exclusions[0].expression.as_str(),
+        "refs/heads/scratch/*"
+    );
     assert_eq!(
         publish_due_backup_policy(&fixture.database, now + Duration::seconds(61))
             .await

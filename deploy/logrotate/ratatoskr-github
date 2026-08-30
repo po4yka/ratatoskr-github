@@ -1,0 +1,10 @@
+/mnt/nvme/ratatoskr/log/github/catalog.log {
+    daily
+    rotate 14
+    compress
+    delaycompress
+    missingok
+    notifempty
+    copytruncate
+    su ratatoskr-github ratatoskr-github
+}

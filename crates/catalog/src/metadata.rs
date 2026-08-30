@@ -315,6 +315,14 @@ pub async fn apply_fresh_source(
     let payload =
         serde_json::to_value(&request).map_err(RepositoryAnalysisPublicationError::Encode)?;
     let message_id = Uuid::now_v7();
+    let envelope = crate::outbox::event_bytes(
+        message_id,
+        request.repository_id.as_entity_ref(),
+        request.request_id.as_entity_ref(),
+        Some(request.owner),
+        &request,
+    )
+    .map_err(RepositoryAnalysisPublicationError::Encode)?;
     let inserted = sqlx::query(
         "insert into github_catalog.repository_analysis_publications
              (repository_id, source_digest, message_id, payload)
@@ -335,15 +343,15 @@ pub async fn apply_fresh_source(
             )),
         ));
     }
-    sqlx::query(
-        "insert into github_catalog.outbox_events (message_id, subject, payload)
-         values ($1, 'knowledge.repository_analysis.requested.v1', $2)",
+    crate::outbox::insert(
+        &mut transaction,
+        message_id,
+        crate::outbox::ANALYSIS_SUBJECT,
+        &envelope,
+        &format!("repository-analysis:{repository_id}"),
+        Some(&request.owner.to_string()),
     )
-    .bind(message_id)
-    .bind(payload)
-    .execute(&mut *transaction)
-    .await
-    .map_err(PersistenceError::Query)?;
+    .await?;
     prune_history_in_tx(&mut transaction, repository_id).await?;
     transaction
         .commit()

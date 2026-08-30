@@ -4,7 +4,7 @@
 //! Process boundary for Ratatoskr GitHub Catalog.
 
 use std::sync::Arc;
-use std::sync::atomic::{AtomicU8, Ordering};
+use std::sync::atomic::{AtomicU8, AtomicU64, Ordering};
 
 use axum::Router;
 use axum::http::{HeaderValue, StatusCode, header};
@@ -12,14 +12,23 @@ use axum::middleware::{self, Next};
 use axum::response::Response;
 use axum::routing::get;
 
+mod bus;
 mod repository_action_attempts;
 mod repository_api;
+mod runtime;
 
+pub use bus::{BusError, COMMAND_STREAM, CONSUMERS, ConsumerSpec, EVENT_STREAM, FleetBus};
 pub use repository_api::{RepositoryApiState, domain_router};
+pub use runtime::{RuntimeError, run_fleet_bus_runtime};
 
 const STARTING: u8 = 0;
 const READY: u8 = 1;
 const DRAINING: u8 = 2;
+const DATABASE_READY: u8 = 1;
+const BUS_READY: u8 = 2;
+const TOPOLOGY_READY: u8 = 4;
+const ALL_DEPENDENCIES_READY: u8 = DATABASE_READY | BUS_READY | TOPOLOGY_READY;
+const EXPECTED_WORKERS: u8 = 7;
 
 /// A bounded, non-secret operator command.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -49,6 +58,11 @@ pub enum OperatorCommand {
     CutoverReadiness {
         /// Stable non-secret source label.
         source_id: String,
+    },
+    /// Requeue one exact unpublished dead-lettered outbox identity.
+    RequeueDeadLetter {
+        /// Existing outbox message UUID.
+        message_id: String,
     },
 }
 
@@ -103,8 +117,18 @@ where
         Some("cutover-readiness") => parse_source_id(&remaining, |source_id| {
             OperatorCommand::CutoverReadiness { source_id }
         }),
+        Some("requeue-dead-letter") => parse_message_id(&remaining),
         Some("check-config" | "reconnect-pat") => Err(OperatorCommandError::InvalidArguments),
         Some(_) => Err(OperatorCommandError::UnknownCommand),
+    }
+}
+
+fn parse_message_id(arguments: &[String]) -> Result<OperatorCommand, OperatorCommandError> {
+    match arguments {
+        [flag, message_id] if flag == "--message-id" => Ok(OperatorCommand::RequeueDeadLetter {
+            message_id: message_id.clone(),
+        }),
+        _ => Err(OperatorCommandError::InvalidArguments),
     }
 }
 
@@ -144,6 +168,12 @@ fn parse_import_legacy(arguments: &[String]) -> Result<OperatorCommand, Operator
 #[derive(Debug, Clone)]
 pub struct Lifecycle {
     state: Arc<AtomicU8>,
+    dependencies: Arc<AtomicU8>,
+    workers: Arc<AtomicU8>,
+    retries: Arc<AtomicU64>,
+    duplicates: Arc<AtomicU64>,
+    rejections: Arc<AtomicU64>,
+    dead_letters: Arc<AtomicU64>,
 }
 
 impl Lifecycle {
@@ -152,12 +182,75 @@ impl Lifecycle {
     pub fn starting() -> Self {
         Self {
             state: Arc::new(AtomicU8::new(STARTING)),
+            dependencies: Arc::new(AtomicU8::new(0)),
+            workers: Arc::new(AtomicU8::new(0)),
+            retries: Arc::new(AtomicU64::new(0)),
+            duplicates: Arc::new(AtomicU64::new(0)),
+            rejections: Arc::new(AtomicU64::new(0)),
+            dead_letters: Arc::new(AtomicU64::new(0)),
         }
     }
 
     /// Marks storage startup complete.
     pub fn mark_ready(&self) {
+        self.dependencies
+            .store(ALL_DEPENDENCIES_READY, Ordering::Release);
+        self.workers.store(EXPECTED_WORKERS, Ordering::Release);
         self.state.store(READY, Ordering::Release);
+    }
+
+    /// Marks storage usable without claiming the other serving dependencies.
+    pub fn mark_database_ready(&self) {
+        self.dependencies.fetch_or(DATABASE_READY, Ordering::AcqRel);
+    }
+
+    /// Marks the NATS connection usable or unavailable.
+    pub fn set_bus_ready(&self, ready: bool) {
+        if ready {
+            self.dependencies.fetch_or(BUS_READY, Ordering::AcqRel);
+        } else {
+            self.dependencies.fetch_and(!BUS_READY, Ordering::AcqRel);
+        }
+    }
+
+    /// Marks all four exact fixed durables verified or drifted.
+    pub fn set_topology_ready(&self, ready: bool) {
+        if ready {
+            self.dependencies.fetch_or(TOPOLOGY_READY, Ordering::AcqRel);
+        } else {
+            self.dependencies
+                .fetch_and(!TOPOLOGY_READY, Ordering::AcqRel);
+        }
+    }
+
+    /// Marks the serving supervisor active after worker creation.
+    pub fn mark_serving(&self) {
+        self.state.store(READY, Ordering::Release);
+    }
+
+    /// Records the current live supervised-worker count.
+    pub fn set_live_workers(&self, count: u8) {
+        self.workers.store(count, Ordering::Release);
+    }
+
+    /// Increments one bounded retry counter.
+    pub fn record_retry(&self) {
+        self.retries.fetch_add(1, Ordering::Relaxed);
+    }
+
+    /// Increments one absorbed duplicate counter.
+    pub fn record_duplicate(&self) {
+        self.duplicates.fetch_add(1, Ordering::Relaxed);
+    }
+
+    /// Increments one terminal rejection counter.
+    pub fn record_rejection(&self) {
+        self.rejections.fetch_add(1, Ordering::Relaxed);
+    }
+
+    /// Increments one dead-letter counter without changing readiness.
+    pub fn record_dead_letter(&self) {
+        self.dead_letters.fetch_add(1, Ordering::Relaxed);
     }
 
     /// Starts drain and makes readiness fail.
@@ -169,6 +262,19 @@ impl Lifecycle {
     #[must_use]
     pub fn is_ready(&self) -> bool {
         self.state.load(Ordering::Acquire) == READY
+            && self.dependencies.load(Ordering::Acquire) == ALL_DEPENDENCIES_READY
+            && self.workers.load(Ordering::Acquire) == EXPECTED_WORKERS
+    }
+
+    fn metrics(&self) -> String {
+        format!(
+            "# TYPE github_catalog_process_info gauge\ngithub_catalog_process_info 1\n# TYPE github_catalog_bus_retries_total counter\ngithub_catalog_bus_retries_total {}\n# TYPE github_catalog_bus_duplicates_total counter\ngithub_catalog_bus_duplicates_total {}\n# TYPE github_catalog_bus_rejections_total counter\ngithub_catalog_bus_rejections_total {}\n# TYPE github_catalog_outbox_dead_letters_total counter\ngithub_catalog_outbox_dead_letters_total {}\n# TYPE github_catalog_bus_workers gauge\ngithub_catalog_bus_workers {}\n",
+            self.retries.load(Ordering::Relaxed),
+            self.duplicates.load(Ordering::Relaxed),
+            self.rejections.load(Ordering::Relaxed),
+            self.dead_letters.load(Ordering::Relaxed),
+            self.workers.load(Ordering::Relaxed),
+        )
     }
 }
 
@@ -195,8 +301,8 @@ async fn ready(axum::extract::State(lifecycle): axum::extract::State<Lifecycle>)
     }
 }
 
-async fn metrics() -> &'static str {
-    "# TYPE github_catalog_process_info gauge\ngithub_catalog_process_info 1\n"
+async fn metrics(axum::extract::State(lifecycle): axum::extract::State<Lifecycle>) -> String {
+    lifecycle.metrics()
 }
 
 async fn version() -> &'static str {

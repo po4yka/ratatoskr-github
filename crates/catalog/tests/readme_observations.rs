@@ -100,13 +100,22 @@ async fn source_revision_creates_one_contract_valid_analysis_outbox_command()
         .await?,
         AppliedOutcome::Unchanged
     );
-    let payload: serde_json::Value = sqlx::query_scalar(
-        "select payload from github_catalog.outbox_events where subject = 'knowledge.repository_analysis.requested.v1'",
+    let envelope_bytes: Vec<u8> = sqlx::query_scalar(
+        "select envelope from github_catalog.outbox_events where subject = 'evt.knowledge.repository_analysis.requested.v1'",
     )
     .fetch_one(database.database.pool())
     .await?;
-    let request: ratatoskr_github_contracts::RepositoryAnalysisRequested =
-        serde_json::from_value(payload)?;
+    let envelope = ratatoskr_event_envelope::EventEnvelope::from_json(&envelope_bytes)?;
+    assert_eq!(
+        envelope.event_type.to_wire(),
+        "knowledge.repository_analysis.requested.v1"
+    );
+    assert_eq!(
+        envelope.event_id.to_string(),
+        envelope_bytes_message_id(&database).await?
+    );
+    let request =
+        envelope.payload_as::<ratatoskr_github_contracts::RepositoryAnalysisRequested>()?;
     assert_eq!(
         request.repository_id.to_string(),
         repository.repository_id.to_string()
@@ -118,4 +127,13 @@ async fn source_revision_creates_one_contract_valid_analysis_outbox_command()
     assert_eq!(publications, 1);
     database.cleanup().await?;
     Ok(())
+}
+
+async fn envelope_bytes_message_id(database: &TestDatabase) -> Result<String, sqlx::Error> {
+    sqlx::query_scalar(
+        "select message_id::text from github_catalog.outbox_events
+         where subject = 'evt.knowledge.repository_analysis.requested.v1'",
+    )
+    .fetch_one(database.database.pool())
+    .await
 }

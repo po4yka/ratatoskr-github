@@ -17,6 +17,8 @@ pub struct Config {
     pub api: ApiConfig,
     /// GitHub provider endpoint configuration.
     pub provider: ProviderConfig,
+    /// Platform-owned fleet bus connection and finite worker limits.
+    pub bus: BusConfig,
     /// Owned durable storage configuration.
     pub storage: StorageConfig,
     /// Credential encryption configuration.
@@ -50,6 +52,114 @@ pub struct ProviderConfig {
     pub base_url: String,
 }
 
+/// Finite least-privilege fleet bus configuration.
+#[derive(Clone, Serialize)]
+pub struct BusConfig {
+    /// NATS endpoint; credentials are supplied only by the seed file.
+    pub url: String,
+    #[serde(skip_serializing)]
+    nkey_seed_path: Option<String>,
+    /// Overall connection deadline.
+    pub connect_timeout_ms: u64,
+    /// `JetStream` persistence acknowledgement deadline.
+    pub publish_ack_timeout_ms: u64,
+    /// Idle worker polling interval.
+    pub poll_interval_ms: u64,
+    /// Database claim lease duration.
+    pub lease_ms: u64,
+    /// Maximum rows or deliveries admitted per iteration.
+    pub batch_size: u32,
+    /// Finite application attempt ceiling.
+    pub max_attempts: i32,
+    /// Maximum wait for supervised workers to join.
+    pub worker_join_timeout_ms: u64,
+}
+
+impl BusConfig {
+    /// Returns the protected `NKey` seed path required by the serving role.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ConfigError`] when no absolute seed path is configured.
+    pub fn nkey_seed_path(&self) -> Result<&str, ConfigError> {
+        self.nkey_seed_path.as_deref().ok_or_else(|| {
+            ConfigError::new(
+                "RATATOSKR__BUS__NKEY_SEED_PATH",
+                "must be configured for the serving role",
+            )
+        })
+    }
+
+    fn validate(&self, shutdown_timeout_ms: u64) -> Result<(), ConfigError> {
+        for (key, value, maximum) in [
+            (
+                "RATATOSKR__BUS__CONNECT_TIMEOUT_MS",
+                self.connect_timeout_ms,
+                30_000,
+            ),
+            (
+                "RATATOSKR__BUS__PUBLISH_ACK_TIMEOUT_MS",
+                self.publish_ack_timeout_ms,
+                30_000,
+            ),
+            (
+                "RATATOSKR__BUS__POLL_INTERVAL_MS",
+                self.poll_interval_ms,
+                60_000,
+            ),
+            ("RATATOSKR__BUS__LEASE_MS", self.lease_ms, 600_000),
+            (
+                "RATATOSKR__BUS__WORKER_JOIN_TIMEOUT_MS",
+                self.worker_join_timeout_ms,
+                120_000,
+            ),
+        ] {
+            if value == 0 || value > maximum {
+                return Err(ConfigError::new(key, "must be within its finite bound"));
+            }
+        }
+        if !(1..=256).contains(&self.batch_size) {
+            return Err(ConfigError::new(
+                "RATATOSKR__BUS__BATCH_SIZE",
+                "must be between 1 and 256",
+            ));
+        }
+        if !(1..=100).contains(&self.max_attempts) {
+            return Err(ConfigError::new(
+                "RATATOSKR__BUS__MAX_ATTEMPTS",
+                "must be between 1 and 100",
+            ));
+        }
+        if self.worker_join_timeout_ms >= shutdown_timeout_ms || shutdown_timeout_ms > 125_000 {
+            return Err(ConfigError::new(
+                "RATATOSKR__LIMITS__SHUTDOWN_TIMEOUT_MS",
+                "must exceed worker join timeout and be at most 125000",
+            ));
+        }
+        Ok(())
+    }
+}
+
+impl fmt::Debug for BusConfig {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("BusConfig")
+            .field("url", &self.url)
+            .field(
+                "nkey_seed_path",
+                &self.nkey_seed_path.as_ref().map(|_| "[REDACTED]"),
+            )
+            .field("connect_timeout_ms", &self.connect_timeout_ms)
+            .field("publish_ack_timeout_ms", &self.publish_ack_timeout_ms)
+            .field("poll_interval_ms", &self.poll_interval_ms)
+            .field("lease_ms", &self.lease_ms)
+            .field("batch_size", &self.batch_size)
+            .field("max_attempts", &self.max_attempts)
+            .field("worker_join_timeout_ms", &self.worker_join_timeout_ms)
+            .finish()
+    }
+}
+
 /// `PostgreSQL` storage locations owned by this service.
 #[derive(Clone, Serialize)]
 pub struct StorageConfig {
@@ -72,6 +182,8 @@ impl fmt::Debug for StorageConfig {
 pub struct CredentialsConfig {
     #[serde(skip_serializing)]
     encryption_key_hex: Option<String>,
+    #[serde(skip_serializing)]
+    encryption_key_path: Option<String>,
     /// Non-secret label of the configured encryption key.
     pub key_version: Option<String>,
 }
@@ -83,12 +195,23 @@ impl CredentialsConfig {
     ///
     /// Returns [`ConfigError`] when registration encryption is not configured.
     pub fn encryption_key(&self) -> Result<CredentialKey, ConfigError> {
-        let value = self.encryption_key_hex.as_deref().ok_or_else(|| {
-            ConfigError::new(
-                "RATATOSKR__CREDENTIALS__ENCRYPTION_KEY_HEX",
+        let from_file;
+        let value = if let Some(value) = self.encryption_key_hex.as_deref() {
+            value
+        } else if let Some(path) = self.encryption_key_path.as_deref() {
+            from_file = std::fs::read_to_string(path).map_err(|_| {
+                ConfigError::new(
+                    "RATATOSKR__CREDENTIALS__ENCRYPTION_KEY_PATH",
+                    "must name a readable protected key file",
+                )
+            })?;
+            from_file.trim()
+        } else {
+            return Err(ConfigError::new(
+                "RATATOSKR__CREDENTIALS__ENCRYPTION_KEY_PATH",
                 "must be configured for credential registration",
-            )
-        })?;
+            ));
+        };
         let version = self.key_version.as_deref().ok_or_else(|| {
             ConfigError::new(
                 "RATATOSKR__CREDENTIALS__KEY_VERSION",
@@ -104,16 +227,25 @@ impl CredentialsConfig {
     }
 
     fn validate(&self) -> Result<(), ConfigError> {
-        match (&self.encryption_key_hex, &self.key_version) {
-            (None, None) => Ok(()),
-            (Some(_), Some(_)) => self.encryption_key().map(|_| ()),
-            (None, Some(_)) => Err(ConfigError::new(
+        if self.encryption_key_hex.is_some() && self.encryption_key_path.is_some() {
+            return Err(ConfigError::new(
+                "RATATOSKR__CREDENTIALS__ENCRYPTION_KEY_PATH",
+                "must not be combined with RATATOSKR__CREDENTIALS__ENCRYPTION_KEY_HEX",
+            ));
+        }
+        match (
+            self.encryption_key_hex.is_some() || self.encryption_key_path.is_some(),
+            &self.key_version,
+        ) {
+            (false, None) => Ok(()),
+            (true, Some(_)) => self.encryption_key().map(|_| ()),
+            (false, Some(_)) => Err(ConfigError::new(
                 "RATATOSKR__CREDENTIALS__ENCRYPTION_KEY_HEX",
                 "must be configured with RATATOSKR__CREDENTIALS__KEY_VERSION",
             )),
-            (Some(_), None) => Err(ConfigError::new(
+            (true, None) => Err(ConfigError::new(
                 "RATATOSKR__CREDENTIALS__KEY_VERSION",
-                "must be configured with RATATOSKR__CREDENTIALS__ENCRYPTION_KEY_HEX",
+                "must be configured with the credential encryption key",
             )),
         }
     }
@@ -126,6 +258,10 @@ impl fmt::Debug for CredentialsConfig {
             .field(
                 "encryption_key_hex",
                 &self.encryption_key_hex.as_ref().map(|_| "[REDACTED]"),
+            )
+            .field(
+                "encryption_key_path",
+                &self.encryption_key_path.as_ref().map(|_| "[REDACTED]"),
             )
             .field("key_version", &self.key_version)
             .finish()
@@ -318,6 +454,7 @@ impl Config {
     fn validate(&self) -> Result<(), ConfigError> {
         self.credentials.validate()?;
         self.github_oauth.validate()?;
+        self.bus.validate(self.limits.shutdown_timeout_ms)?;
         if self.api.listen_address == self.admin.listen_address {
             return Err(ConfigError::new(
                 "RATATOSKR__API__LISTEN_ADDRESS",
@@ -325,6 +462,22 @@ impl Config {
             ));
         }
         validate_provider_base_url("RATATOSKR__PROVIDER__BASE_URL", &self.provider.base_url)
+    }
+
+    /// Validates dependencies required only by the long-running serving role.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ConfigError`] when bus identity or credential encryption is incomplete.
+    pub fn validate_for_serving(&self) -> Result<(), ConfigError> {
+        let seed_path = self.bus.nkey_seed_path()?;
+        std::fs::File::open(seed_path).map_err(|_| {
+            ConfigError::new(
+                "RATATOSKR__BUS__NKEY_SEED_PATH",
+                "must name a readable protected seed file",
+            )
+        })?;
+        self.credentials.encryption_key().map(|_| ())
     }
 }
 
@@ -346,6 +499,10 @@ impl fmt::Display for ConfigError {
 impl error::Error for ConfigError {}
 
 fn apply_entry(config: &mut Config, key: &str, value: &str) -> Result<(), ConfigError> {
+    if apply_bus_entry(&mut config.bus, key, value)? {
+        return Ok(());
+    }
+
     match key {
         "RATATOSKR__ADMIN__LISTEN_ADDRESS" => {
             let address = value
@@ -386,6 +543,15 @@ fn apply_entry(config: &mut Config, key: &str, value: &str) -> Result<(), Config
         "RATATOSKR__CREDENTIALS__ENCRYPTION_KEY_HEX" => {
             config.credentials.encryption_key_hex = Some(value.to_owned());
         }
+        "RATATOSKR__CREDENTIALS__ENCRYPTION_KEY_PATH" => {
+            if !std::path::Path::new(value).is_absolute() {
+                return Err(ConfigError::new(
+                    key,
+                    "must be an absolute protected file path",
+                ));
+            }
+            config.credentials.encryption_key_path = Some(value.to_owned());
+        }
         "RATATOSKR__CREDENTIALS__KEY_VERSION" => {
             config.credentials.key_version = Some(value.to_owned());
         }
@@ -413,6 +579,62 @@ fn apply_entry(config: &mut Config, key: &str, value: &str) -> Result<(), Config
         _ => return Err(ConfigError::new(key, "is not recognized")),
     }
     Ok(())
+}
+
+fn apply_bus_entry(config: &mut BusConfig, key: &str, value: &str) -> Result<bool, ConfigError> {
+    match key {
+        "RATATOSKR__BUS__URL" => {
+            validate_bus_url(key, value)?;
+            value.clone_into(&mut config.url);
+        }
+        "RATATOSKR__BUS__NKEY_SEED_PATH" => {
+            if !std::path::Path::new(value).is_absolute() {
+                return Err(ConfigError::new(
+                    key,
+                    "must be an absolute protected file path",
+                ));
+            }
+            config.nkey_seed_path = Some(value.to_owned());
+        }
+        "RATATOSKR__BUS__CONNECT_TIMEOUT_MS" => {
+            config.connect_timeout_ms = parse_positive(key, value)?;
+        }
+        "RATATOSKR__BUS__PUBLISH_ACK_TIMEOUT_MS" => {
+            config.publish_ack_timeout_ms = parse_positive(key, value)?;
+        }
+        "RATATOSKR__BUS__POLL_INTERVAL_MS" => {
+            config.poll_interval_ms = parse_positive(key, value)?;
+        }
+        "RATATOSKR__BUS__LEASE_MS" => config.lease_ms = parse_positive(key, value)?,
+        "RATATOSKR__BUS__BATCH_SIZE" => config.batch_size = parse_positive(key, value)?,
+        "RATATOSKR__BUS__MAX_ATTEMPTS" => config.max_attempts = parse_positive(key, value)?,
+        "RATATOSKR__BUS__WORKER_JOIN_TIMEOUT_MS" => {
+            config.worker_join_timeout_ms = parse_positive(key, value)?;
+        }
+        _ => return Ok(false),
+    }
+    Ok(true)
+}
+
+fn validate_bus_url(key: &str, value: &str) -> Result<(), ConfigError> {
+    let parsed = reqwest::Url::parse(value)
+        .map_err(|_| ConfigError::new(key, "must be a loopback NATS origin"))?;
+    let valid = parsed.scheme() == "nats"
+        && parsed.username().is_empty()
+        && parsed.password().is_none()
+        && parsed.query().is_none()
+        && parsed.fragment().is_none()
+        && parsed.path() == ""
+        && parsed.port().is_some()
+        && parsed
+            .host_str()
+            .and_then(|host| host.parse::<IpAddr>().ok())
+            .is_some_and(|address| address.is_loopback());
+    if valid {
+        Ok(())
+    } else {
+        Err(ConfigError::new(key, "must be a loopback NATS origin"))
+    }
 }
 
 fn validate_provider_base_url(key: &str, value: &str) -> Result<(), ConfigError> {
@@ -474,11 +696,23 @@ impl Default for Config {
             provider: ProviderConfig {
                 base_url: "https://api.github.com".to_owned(),
             },
+            bus: BusConfig {
+                url: "nats://127.0.0.1:4222".to_owned(),
+                nkey_seed_path: None,
+                connect_timeout_ms: 5_000,
+                publish_ack_timeout_ms: 5_000,
+                poll_interval_ms: 250,
+                lease_ms: 30_000,
+                batch_size: 16,
+                max_attempts: 10,
+                worker_join_timeout_ms: 120_000,
+            },
             storage: StorageConfig {
                 database_url: "postgres://github:github@127.0.0.1:5435/github".to_owned(),
             },
             credentials: CredentialsConfig {
                 encryption_key_hex: None,
+                encryption_key_path: None,
                 key_version: None,
             },
             github_oauth: GithubOAuthConfig {
@@ -491,7 +725,7 @@ impl Default for Config {
             limits: Limits {
                 database_connections: 8,
                 database_acquire_timeout_ms: 5_000,
-                shutdown_timeout_ms: 10_000,
+                shutdown_timeout_ms: 125_000,
             },
         }
     }

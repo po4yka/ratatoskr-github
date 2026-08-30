@@ -15,7 +15,9 @@ repository = "https://github.com/po4yka/ratatoskr-github"
 [workspace.dependencies]
 ratatoskr-github-catalog = { version = "=0.1.0", path = "crates/catalog" }
 
+async-nats = "=0.50.0"
 axum = { version = "=0.8.9", default-features = false, features = ["http1", "json", "tokio"] }
+futures-util = { version = "=0.3.34", default-features = false, features = ["std"] }
 aes-gcm = "=0.11.1"
 http-body-util = "=0.1.5"
 reqwest = { version = "=0.12.28", default-features = false, features = ["json", "rustls-tls"] }
@@ -39,6 +41,7 @@ tokio = { version = "=1.53.1", features = [
     "net",
     "rt-multi-thread",
     "signal",
+    "sync",
     "time",
 ] }
 tower = { version = "=0.5.3", features = ["util"] }

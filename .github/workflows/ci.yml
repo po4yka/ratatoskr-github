@@ -18,6 +18,7 @@ jobs:
     timeout-minutes: 30
     env:
       GITHUB_CATALOG_TEST_DATABASE_URL: postgres://github:github@127.0.0.1:5432/github
+      GITHUB_CATALOG_TEST_NATS_URL: nats://127.0.0.1:4222
     services:
       postgres:
         image: postgres:17@sha256:e38411452a464af89e5adadb8d223bf53b898d47d6ef918b2d58c08707350449
@@ -37,6 +38,21 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
+      - name: Start disposable JetStream broker
+        run: >-
+          docker run --detach --name github-nats --publish 127.0.0.1:4222:4222
+          --publish 127.0.0.1:8222:8222
+          nats:2-alpine@sha256:d4ac35882ac65aff236cd65b9d3fa4d24332c681e1a85f94eedccd3cdd65b1da
+          --jetstream --store_dir=/data --http_port=8222
+      - name: Wait for disposable JetStream broker
+        run: |
+          for attempt in $(seq 1 30); do
+            if curl --fail --silent http://127.0.0.1:8222/healthz | grep --quiet ok; then
+              exit 0
+            fi
+            sleep 1
+          done
+          exit 1
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
       - run: cargo fetch --locked
       - uses: taiki-e/install-action@5b4d68e2e660441203ab128a23676f1e4faf1532 # v2.86.3

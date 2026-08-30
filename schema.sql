@@ -622,39 +622,76 @@ create table if not exists github_catalog.repository_action_attempts (
 );
 
 create table if not exists github_catalog.outbox_events (
-    message_id   uuid primary key,
-    subject      text not null,
-    payload      jsonb not null,
-    created_at   timestamptz not null default now(),
-    published_at timestamptz,
+    message_id        uuid primary key,
+    subject           text not null,
+    envelope          bytea not null,
+    owner_ref         text,
+    ordering_key      text not null,
+    ordering_sequence bigint not null,
+    lease_owner       uuid,
+    lease_expires_at  timestamptz,
+    attempt_count     integer not null default 0,
+    next_attempt_at   timestamptz not null default now(),
+    created_at        timestamptz not null default now(),
+    published_at      timestamptz,
+    dead_lettered_at  timestamptz,
+    failure_code      text,
     constraint outbox_subject_is_known check (subject in (
-        'github.sync.requested.v1',
-        'github.repository.observed.v1',
-        'github.star.observed.v1',
-        'github.star.removed.v1',
-        'github.backup_policy.changed.v1',
         'cmd.vault.target.desired.v1',
-        'knowledge.repository_analysis.requested.v1'
+        'evt.knowledge.repository_analysis.requested.v1'
     )),
-    constraint outbox_payload_is_object check (jsonb_typeof(payload) = 'object')
+    constraint outbox_ordering_identity unique (ordering_key, ordering_sequence),
+    constraint outbox_ordering_key_check check (length(ordering_key) between 1 and 256),
+    constraint outbox_ordering_sequence_check check (ordering_sequence > 0),
+    constraint outbox_attempt_count_check check (attempt_count >= 0),
+    constraint outbox_lease_pair_check check ((lease_owner is null) = (lease_expires_at is null)),
+    constraint outbox_terminal_state_check check (
+        not (published_at is not null and dead_lettered_at is not null)
+        and (dead_lettered_at is null or failure_code is not null)
+    )
 );
 
+create index if not exists outbox_due_idx
+    on github_catalog.outbox_events (next_attempt_at, created_at)
+    where published_at is null and dead_lettered_at is null;
+
 create table if not exists github_catalog.inbox_events (
-    message_id  uuid primary key,
-    subject     text not null,
-    payload     jsonb not null,
-    created_at  timestamptz not null default now(),
-    consumed_at timestamptz,
+    message_id       uuid primary key,
+    subject          text not null,
+    envelope         bytea not null,
+    owner_ref        text,
+    stream_name      text not null,
+    consumer_name    text not null,
+    stream_sequence  bigint not null,
+    delivery_count   integer not null,
+    state            text not null default 'received',
+    lease_owner      uuid,
+    lease_expires_at timestamptz,
+    attempt_count    integer not null default 0,
+    next_attempt_at  timestamptz not null default now(),
+    terminal_outcome text,
+    failure_code     text,
+    created_at       timestamptz not null default now(),
+    consumed_at      timestamptz,
     constraint inbox_subject_is_known check (subject in (
-        'github.sync.requested.v1',
-        'github.repository.observed.v1',
-        'github.star.observed.v1',
-        'github.star.removed.v1',
-        'github.backup_policy.changed.v1',
+        'cmd.github.sync.requested.v1',
         'evt.vault.backup_policy.acknowledged.v1',
-        'knowledge.repository_analysis.requested.v1',
-        'knowledge.repository_analysis.completed.v1',
-        'knowledge.repository_analysis.failed.v1'
+        'evt.knowledge.repository_analysis.completed.v1',
+        'evt.knowledge.repository_analysis.failed.v1'
     )),
-    constraint inbox_payload_is_object check (jsonb_typeof(payload) = 'object')
+    constraint inbox_transport_identity unique (stream_name, consumer_name, stream_sequence),
+    constraint inbox_transport_values_check check (stream_sequence > 0 and delivery_count > 0),
+    constraint inbox_state_check check (state in ('received', 'processing', 'retryable', 'consumed', 'rejected')),
+    constraint inbox_lease_pair_check check ((lease_owner is null) = (lease_expires_at is null)),
+    constraint inbox_attempt_count_check check (attempt_count >= 0),
+    constraint inbox_terminal_state_check check (
+        (state in ('consumed', 'rejected')) = (terminal_outcome is not null)
+        and (state <> 'rejected' or failure_code is not null)
+        and (state not in ('received', 'processing', 'consumed') or failure_code is null)
+        and (consumed_at is not null) = (state in ('consumed', 'rejected'))
+    )
 );
+
+create index if not exists inbox_retryable_idx
+    on github_catalog.inbox_events (next_attempt_at, created_at)
+    where state in ('received', 'retryable');

@@ -9,12 +9,15 @@
 //! implementation plan items.
 
 mod account_erasure;
+mod analysis_terminal;
 mod backup_policy;
 mod commands;
 mod config;
 mod credentials;
 mod database;
+mod due;
 mod identity;
+mod inbox;
 mod incremental;
 mod legacy;
 mod list_mutations;
@@ -23,6 +26,7 @@ mod modes;
 mod mutation_trail;
 mod mutations;
 mod observe;
+mod outbox;
 pub mod provider;
 mod provider_mutations;
 pub mod rate_limit;
@@ -35,17 +39,22 @@ mod watches;
 pub mod test_support;
 
 pub use account_erasure::{AccountErasureError, erase_account};
+pub use analysis_terminal::{
+    consume_repository_analysis_completed, consume_repository_analysis_completed_delivery,
+    consume_repository_analysis_failed, consume_repository_analysis_failed_delivery,
+};
 pub use backup_policy::{
     BackupPolicyError, BackupPolicyInput, FeedbackOutcome, POLICY_DEBOUNCE, PolicyFeedback,
     PublicationOutcome, derive_backup_policy, latest_backup_policy_feedback,
     mark_backup_policy_dirty, publish_due_backup_policy, record_backup_policy_acknowledgment,
+    record_backup_policy_acknowledgment_delivery,
 };
 pub use commands::{
     ConsumedSyncCommand, HandledSyncCommand, RequestedSyncMode, SYNC_REQUESTED_TYPE,
-    SyncCommandError, handle_sync_command,
+    SyncCommandError, handle_authenticated_sync_delivery, handle_sync_command,
 };
 pub use config::{
-    AdminConfig, ApiConfig, Config, ConfigError, CredentialsConfig, GithubOAuthConfig,
+    AdminConfig, ApiConfig, BusConfig, Config, ConfigError, CredentialsConfig, GithubOAuthConfig,
     LegacyConfig, Limits, OAuthAppCredentials, ProviderConfig, StorageConfig,
 };
 pub use credentials::{
@@ -53,9 +62,14 @@ pub use credentials::{
     register_oauth, register_pat,
 };
 pub use database::{Database, PersistenceError};
+pub use due::{DueWorkError, DueWorkReport, run_due_work_once};
 pub use identity::{
     AliasKind, IdentityError, RepositoryIdentity, apply_alias_observation, record_alias,
     resolve_alias, upsert_repository,
+};
+pub use inbox::{
+    InboxClaimOutcome, InboxDelivery, claim_inbox_delivery, complete_inbox_delivery,
+    reject_inbox_delivery, retry_inbox_delivery,
 };
 pub use incremental::{IncrementalScanError, IncrementalScanOutcome, run_incremental_scan};
 pub use legacy::{
@@ -78,6 +92,11 @@ pub use mutations::{
     MutationStatus, RefusalReason, RepositoryRef, execute_batch, execute_mutation,
 };
 pub use observe::{ObserveError, ObserveOutcome, observe_repository};
+pub use outbox::{
+    ClaimedOutboxMessage, OutboxFailureCode, OutboxPublishReport, OutboxTransport,
+    claim_due_outbox, confirm_outbox_published, fail_outbox_publication, publish_outbox_batch,
+    requeue_dead_letter,
+};
 pub use snapshot::{FullSnapshotOutcome, SnapshotError, run_full_snapshot};
 pub use star_lists::{
     ListMember, StarListSnapshotOutcome, StarListSummary, StarListsError, current_list_members,
@@ -86,8 +105,7 @@ pub use star_lists::{
 pub use telemetry::{TelemetryError, init_telemetry};
 pub use watches::{
     AnalysisDispatch, AnalysisRequestState, RepositoryAnalysisRequestStatus, TerminalFactOutcome,
-    WatchError, WatchEvaluation, WatchRegistration, consume_repository_analysis_completed,
-    consume_repository_analysis_failed, dispatch_due_repository_analysis,
+    WatchError, WatchEvaluation, WatchRegistration, dispatch_due_repository_analysis,
     evaluate_metadata_watches, register_repository_analysis_watch,
     repository_analysis_request_state, set_repository_analysis_watch_enabled,
 };

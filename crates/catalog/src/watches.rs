@@ -1,8 +1,7 @@
 //! User-owned metadata watches and durable Knowledge analysis request linkage.
 
 use ratatoskr_github_contracts::{
-    AnalysisFailureCode, ReadmeAbsenceReason, ReadmeRevision, RepositoryAnalysisAttributes,
-    RepositoryAnalysisCompleted, RepositoryAnalysisContract, RepositoryAnalysisFailed,
+    ReadmeAbsenceReason, ReadmeRevision, RepositoryAnalysisAttributes, RepositoryAnalysisContract,
     RepositoryAnalysisRequested, RepositoryAnalysisRevision, RepositoryDescription,
     RepositoryFullName, RepositoryLanguage,
 };
@@ -18,9 +17,7 @@ use crate::database::{Database, PersistenceError};
 use crate::provider::ProviderRepositoryBody;
 
 const REQUESTED_CONTRACT: &str = "repository_analysis";
-const REQUESTED_SUBJECT: &str = "knowledge.repository_analysis.requested.v1";
-const COMPLETED_SUBJECT: &str = "knowledge.repository_analysis.completed.v1";
-const FAILED_SUBJECT: &str = "knowledge.repository_analysis.failed.v1";
+const REQUESTED_SUBJECT: &str = crate::outbox::ANALYSIS_SUBJECT;
 const DISPATCH_SPACING: Duration = Duration::seconds(1);
 
 /// Visible lifecycle state for a repository-analysis request.
@@ -352,16 +349,25 @@ pub async fn dispatch_due_repository_analysis(
         return Ok(AnalysisDispatch::NotDue);
     };
     let outbox_message_id = Uuid::now_v7();
-    sqlx::query(
-        "insert into github_catalog.outbox_events (message_id, subject, payload)
-         values ($1, $2, $3)",
+    let typed: RepositoryAnalysisRequested =
+        serde_json::from_value(payload).map_err(WatchError::Serialization)?;
+    let envelope = crate::outbox::event_bytes(
+        outbox_message_id,
+        typed.repository_id.as_entity_ref(),
+        typed.request_id.as_entity_ref(),
+        Some(typed.owner),
+        &typed,
     )
-    .bind(outbox_message_id)
-    .bind(REQUESTED_SUBJECT)
-    .bind(payload)
-    .execute(&mut *tx)
-    .await
-    .map_err(PersistenceError::Query)?;
+    .map_err(WatchError::Serialization)?;
+    crate::outbox::insert(
+        &mut tx,
+        outbox_message_id,
+        REQUESTED_SUBJECT,
+        &envelope,
+        &format!("repository-analysis:{request_id}"),
+        Some(&typed.owner.to_string()),
+    )
+    .await?;
     sqlx::query(
         "update github_catalog.repository_analysis_requests
          set status = 'pending', outbox_message_id = $2 where request_id = $1",
@@ -376,59 +382,6 @@ pub async fn dispatch_due_repository_analysis(
         request_id: RepositoryAnalysisRequestId::parse(&request_id.to_string())
             .map_err(|_| WatchError::InvalidStoredIdentity)?,
     })
-}
-
-/// Consumes one completion fact and links its opaque result to the matching pending request.
-///
-/// # Errors
-///
-/// Returns [`WatchError`] when persistence or payload serialization fails.
-pub async fn consume_repository_analysis_completed(
-    database: &Database,
-    message_id: Uuid,
-    completed: &RepositoryAnalysisCompleted,
-) -> Result<TerminalFactOutcome, WatchError> {
-    consume_terminal_fact(
-        database,
-        message_id,
-        COMPLETED_SUBJECT,
-        completed,
-        "completed",
-        Some(completed.analysis_result_ref.to_wire()),
-        None,
-        None,
-    )
-    .await
-}
-
-/// Consumes one failure fact and closes the matching pending request without a result reference.
-///
-/// # Errors
-///
-/// Returns [`WatchError`] when persistence or payload serialization fails.
-pub async fn consume_repository_analysis_failed(
-    database: &Database,
-    message_id: Uuid,
-    failed: &RepositoryAnalysisFailed,
-) -> Result<TerminalFactOutcome, WatchError> {
-    let failure_code = match failed.failure_code {
-        AnalysisFailureCode::SourceUnavailable => "source_unavailable",
-        AnalysisFailureCode::ContractInvalid => "contract_invalid",
-        AnalysisFailureCode::DependencyUnavailable => "dependency_unavailable",
-        AnalysisFailureCode::NotAuthorized => "not_authorized",
-        _ => return Err(WatchError::InvalidStoredIdentity),
-    };
-    consume_terminal_fact(
-        database,
-        message_id,
-        FAILED_SUBJECT,
-        failed,
-        "failed",
-        None,
-        Some(failure_code),
-        Some(failed.retryable),
-    )
-    .await
 }
 
 /// Reads the visible pending/terminal state for one request.
@@ -531,174 +484,4 @@ fn digest_value(value: &impl serde::Serialize) -> Result<ContentDigest, WatchErr
         algorithm: DigestAlgorithm::Sha256,
         hex: DigestHex::parse(&hex).map_err(|_| WatchError::InvalidMetadata)?,
     })
-}
-
-#[expect(
-    clippy::too_many_arguments,
-    reason = "the terminal contract supplies identity while the caller supplies its explicit state transition fields"
-)]
-#[expect(
-    clippy::too_many_lines,
-    reason = "inbox claiming, exact matching, result linkage, and acknowledgement must commit atomically"
-)]
-async fn consume_terminal_fact<T>(
-    database: &Database,
-    message_id: Uuid,
-    subject: &str,
-    terminal: &T,
-    status: &str,
-    analysis_result_ref: Option<String>,
-    failure_code: Option<&str>,
-    retryable: Option<bool>,
-) -> Result<TerminalFactOutcome, WatchError>
-where
-    T: serde::Serialize + TerminalIdentity,
-{
-    let payload = serde_json::to_value(terminal).map_err(WatchError::Serialization)?;
-    let mut tx = database
-        .pool()
-        .begin()
-        .await
-        .map_err(PersistenceError::Query)?;
-    let claimed = sqlx::query(
-        "insert into github_catalog.inbox_events (message_id, subject, payload)
-         values ($1, $2, $3) on conflict do nothing",
-    )
-    .bind(message_id)
-    .bind(subject)
-    .bind(payload)
-    .execute(&mut *tx)
-    .await
-    .map_err(PersistenceError::Query)?
-    .rows_affected();
-    if claimed == 0 {
-        tx.commit().await.map_err(PersistenceError::Query)?;
-        return Ok(TerminalFactOutcome::Duplicate);
-    }
-    let source_revision =
-        serde_json::to_value(terminal.source_revision()).map_err(WatchError::Serialization)?;
-    let result_ref_for_link = analysis_result_ref.clone();
-    let changed = sqlx::query(
-        "update github_catalog.repository_analysis_requests
-         set status = $2, analysis_result_ref = $3, failure_code = $4, retryable = $5,
-             terminal_at = now()
-         where request_id = $1 and owner_ref = $6 and repository_id = $7
-           and github_repository_numeric_id = $8 and source_revision = $9 and status = 'pending'",
-    )
-    .bind(
-        terminal
-            .request_id()
-            .to_string()
-            .parse::<Uuid>()
-            .map_err(|_| WatchError::InvalidStoredIdentity)?,
-    )
-    .bind(status)
-    .bind(analysis_result_ref)
-    .bind(failure_code)
-    .bind(retryable)
-    .bind(terminal.owner().to_string())
-    .bind(
-        terminal
-            .repository_id()
-            .to_string()
-            .parse::<Uuid>()
-            .map_err(|_| WatchError::InvalidStoredIdentity)?,
-    )
-    .bind(
-        i64::try_from(terminal.github_repository_numeric_id())
-            .map_err(|_| WatchError::InvalidStoredIdentity)?,
-    )
-    .bind(source_revision)
-    .execute(&mut *tx)
-    .await
-    .map_err(PersistenceError::Query)?
-    .rows_affected();
-    if changed == 1
-        && status == "completed"
-        && let Some(analysis_result_ref) = result_ref_for_link
-    {
-        sqlx::query(
-            "insert into github_catalog.repository_analysis_links
-                 (owner_ref, repository_id, request_id, analysis_result_ref, completed_at)
-             values ($1, $2, $3, $4, now())
-             on conflict (owner_ref, repository_id) do update set
-                 request_id = excluded.request_id,
-                 analysis_result_ref = excluded.analysis_result_ref,
-                 completed_at = excluded.completed_at",
-        )
-        .bind(terminal.owner().to_string())
-        .bind(
-            terminal
-                .repository_id()
-                .to_string()
-                .parse::<Uuid>()
-                .map_err(|_| WatchError::InvalidStoredIdentity)?,
-        )
-        .bind(
-            terminal
-                .request_id()
-                .to_string()
-                .parse::<Uuid>()
-                .map_err(|_| WatchError::InvalidStoredIdentity)?,
-        )
-        .bind(analysis_result_ref)
-        .execute(&mut *tx)
-        .await
-        .map_err(PersistenceError::Query)?;
-    }
-    sqlx::query("update github_catalog.inbox_events set consumed_at = now() where message_id = $1")
-        .bind(message_id)
-        .execute(&mut *tx)
-        .await
-        .map_err(PersistenceError::Query)?;
-    tx.commit().await.map_err(PersistenceError::Query)?;
-    Ok(if changed == 1 {
-        TerminalFactOutcome::Resolved
-    } else {
-        TerminalFactOutcome::Ignored
-    })
-}
-
-trait TerminalIdentity {
-    fn owner(&self) -> TenantRef;
-    fn repository_id(&self) -> RepositoryId;
-    fn github_repository_numeric_id(&self) -> u64;
-    fn request_id(&self) -> RepositoryAnalysisRequestId;
-    fn source_revision(&self) -> &RepositoryAnalysisRevision;
-}
-
-impl TerminalIdentity for RepositoryAnalysisCompleted {
-    fn owner(&self) -> TenantRef {
-        self.owner
-    }
-    fn repository_id(&self) -> RepositoryId {
-        self.repository_id
-    }
-    fn github_repository_numeric_id(&self) -> u64 {
-        self.github_repository_numeric_id
-    }
-    fn request_id(&self) -> RepositoryAnalysisRequestId {
-        self.request_id
-    }
-    fn source_revision(&self) -> &RepositoryAnalysisRevision {
-        &self.source_revision
-    }
-}
-
-impl TerminalIdentity for RepositoryAnalysisFailed {
-    fn owner(&self) -> TenantRef {
-        self.owner
-    }
-    fn repository_id(&self) -> RepositoryId {
-        self.repository_id
-    }
-    fn github_repository_numeric_id(&self) -> u64 {
-        self.github_repository_numeric_id
-    }
-    fn request_id(&self) -> RepositoryAnalysisRequestId {
-        self.request_id
-    }
-    fn source_revision(&self) -> &RepositoryAnalysisRevision {
-        &self.source_revision
-    }
 }
