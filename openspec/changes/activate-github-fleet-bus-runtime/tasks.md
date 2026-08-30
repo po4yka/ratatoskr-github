@@ -38,4 +38,4 @@
 
 - [x] 5.1 RED — add deployment-profile assertions for arm64, identity, ports, protected inputs, database role, NVMe logging, restrictions, `Type=exec`, and `TimeoutStopSec=130s`.
 - [x] 5.2 GREEN — add the unit, redacted environment example, logrotate rule, deployment docs, README/DEVELOPMENT boundary, and release boot/readiness/SIGTERM smoke.
-- [ ] 5.3 Run the complete locked `DEVELOPMENT.md` gate, strict OpenSpec validation, diff/secret review, commit only GHB-017 paths, and publish the authorized branch with exact local/remote SHA verification.
+- [x] 5.3 Run the complete locked `DEVELOPMENT.md` gate, strict OpenSpec validation, diff/secret review, commit only GHB-017 paths, and publish the authorized branch with exact local/remote SHA verification.
