@@ -1,7 +1,8 @@
 [Unit]
 Description=Ratatoskr GitHub Catalog
-After=network-online.target postgresql.service nats.service
+After=network-online.target docker.service
 Wants=network-online.target
+Requires=docker.service
 
 [Service]
 Type=exec
@@ -28,9 +29,9 @@ RestrictRealtime=true
 LockPersonality=true
 MemoryDenyWriteExecute=true
 RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
-ReadWritePaths=/mnt/nvme/ratatoskr/log/github
-StandardOutput=append:/mnt/nvme/ratatoskr/log/github/catalog.log
-StandardError=append:/mnt/nvme/ratatoskr/log/github/catalog.log
+ReadWritePaths=/mnt/nvme/ratatoskr/logs/github
+StandardOutput=append:/mnt/nvme/ratatoskr/logs/github/catalog.log
+StandardError=append:/mnt/nvme/ratatoskr/logs/github/catalog.log
 
 [Install]
 WantedBy=multi-user.target

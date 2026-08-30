@@ -21,7 +21,9 @@ fn github_service_profile_is_bounded_and_protected() -> Result<(), std::io::Erro
         "RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6",
         "LoadCredential=github.nkey:/etc/ratatoskr/github.nkey",
         "LoadCredential=credential-key:/etc/ratatoskr/github-credential-key",
-        "StandardOutput=append:/mnt/nvme/ratatoskr/log/github/catalog.log",
+        "After=network-online.target docker.service",
+        "Requires=docker.service",
+        "StandardOutput=append:/mnt/nvme/ratatoskr/logs/github/catalog.log",
     ] {
         assert!(unit.contains(required), "unit missing {required}");
     }
@@ -36,7 +38,9 @@ fn github_service_profile_is_bounded_and_protected() -> Result<(), std::io::Erro
             "environment missing {required}"
         );
     }
-    assert!(logrotate.contains("/mnt/nvme/ratatoskr/log/github/catalog.log"));
+    assert!(logrotate.contains("/mnt/nvme/ratatoskr/logs/github/catalog.log"));
+    assert!(!unit.contains("postgresql.service"));
+    assert!(!unit.contains("nats.service"));
     assert!(cargo.contains("aarch64-unknown-linux-gnu"));
     for forbidden in ["SUAAAAAAAA", "github_pat_", "ghp_", "PASSWORD="] {
         assert!(!unit.contains(forbidden));
