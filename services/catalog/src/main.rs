@@ -271,7 +271,7 @@ async fn register_replacement_pat(config: &Config, account_id: &str) -> Result<(
     let pat = read_replacement_pat()?;
     let database = connect_database(config).await?;
     let result = async {
-        let gateway = ReqwestGithubApi::for_base_url("https://api.github.com")
+        let gateway = ReqwestGithubApi::for_base_url(&config.provider.base_url)
             .map_err(ProcessError::Provider)?;
         let authenticated = gateway
             .authenticate_pat(pat.expose_secret())
