@@ -112,7 +112,7 @@ async fn mount_page_with_remaining(
 
 fn exhausted_reset_epoch() -> i64 {
     i64::try_from(
-        std::time::SystemTime::now()
+        std::time::SystemTime::now() // wall-clock: RateLimitLedger::acquire reads the real SystemTime::now() with no injectable clock, so this mocked header must be a genuinely future epoch, not a fixed literal that would eventually lapse into the past
             .duration_since(std::time::SystemTime::UNIX_EPOCH)
             .unwrap_or_default()
             .as_secs(),
@@ -248,7 +248,7 @@ async fn budget_refusal_pauses_run_without_touching_authority()
         return Err(format!("a refused acquisition must pause the run, got {outcome:?}").into());
     };
     assert!(
-        retry_at > std::time::SystemTime::now(),
+        retry_at > std::time::SystemTime::now(), // wall-clock: retry_at is real SystemTime sourced from RateLimitLedger, which has no injectable clock; this proves the pause names a genuinely future retry time
         "the pause must name a future retry time"
     );
 

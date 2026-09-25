@@ -178,7 +178,7 @@ async fn mount_newest_first_page_with_remaining(
 
 fn exhausted_reset_epoch() -> i64 {
     i64::try_from(
-        std::time::SystemTime::now()
+        std::time::SystemTime::now() // wall-clock: RateLimitLedger::acquire reads the real SystemTime::now() with no injectable clock, so this mocked header must be a genuinely future epoch, not a fixed literal that would eventually lapse into the past
             .duration_since(std::time::SystemTime::UNIX_EPOCH)
             .unwrap_or_default()
             .as_secs(),

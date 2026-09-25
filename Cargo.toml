@@ -15,14 +15,14 @@ repository = "https://github.com/po4yka/ratatoskr-github"
 [workspace.dependencies]
 ratatoskr-github-catalog = { version = "=0.1.0", path = "crates/catalog" }
 
-axum = { version = "=0.8.9", default-features = false, features = ["http1", "json", "tokio"] }
-aes-gcm = "=0.11.1"
-http-body-util = "=0.1.5"
-reqwest = { version = "=0.12.28", default-features = false, features = ["json", "rustls-tls"] }
-serde = { version = "=1.0.229", features = ["derive"] }
-serde_json = "=1.0.151"
-secrecy = "=0.10.3"
-sqlx = { version = "=0.8.6", default-features = false, features = [
+axum = { version = "0.8.9", default-features = false, features = ["http1", "json", "tokio"] }
+aes-gcm = "0.11.1"
+http-body-util = "0.1.5"
+reqwest = { version = "0.12.28", default-features = false, features = ["json", "rustls-tls"] }
+serde = { version = "1.0.229", features = ["derive"] }
+serde_json = "1.0.151"
+secrecy = "0.10.3"
+sqlx = { version = "0.8.6", default-features = false, features = [
     "runtime-tokio",
     "tls-rustls-ring",
     "postgres",
@@ -30,9 +30,9 @@ sqlx = { version = "=0.8.6", default-features = false, features = [
     "json",
     "time",
 ] }
-thiserror = "=2.0.20"
-time = { version = "=0.3.55", features = ["parsing", "formatting"] }
-tokio = { version = "=1.53.1", features = [
+thiserror = "2.0.20"
+time = { version = "0.3.55", features = ["parsing", "formatting"] }
+tokio = { version = "1.53.1", features = [
     "fs",
     "io-util",
     "macros",
@@ -41,22 +41,22 @@ tokio = { version = "=1.53.1", features = [
     "signal",
     "time",
 ] }
-tower = { version = "=0.5.3", features = ["util"] }
-tracing = "=0.1.44"
-tracing-subscriber = { version = "=0.3.23", default-features = false, features = [
+tower = { version = "0.5.3", features = ["util"] }
+tracing = "0.1.44"
+tracing-subscriber = { version = "0.3.23", default-features = false, features = [
     "fmt",
     "json",
     "registry",
 ] }
-uuid = { version = "=1.24.1", features = ["v7"] }
-wiremock = "=0.6.5"
+uuid = { version = "1.24.1", features = ["v7"] }
+wiremock = "0.6.5"
 ratatoskr-backup-contracts = { git = "https://github.com/po4yka/ratatoskr-contracts.git", rev = "5b8bbb4220375f6236066a23b19e9d6f8faaaf28" }
 ratatoskr-event-envelope = { git = "https://github.com/po4yka/ratatoskr-contracts.git", rev = "5b8bbb4220375f6236066a23b19e9d6f8faaaf28" }
 ratatoskr-error-contracts = { git = "https://github.com/po4yka/ratatoskr-contracts.git", rev = "5b8bbb4220375f6236066a23b19e9d6f8faaaf28" }
 ratatoskr-github-contracts = { git = "https://github.com/po4yka/ratatoskr-contracts.git", rev = "5b8bbb4220375f6236066a23b19e9d6f8faaaf28" }
 ratatoskr-identifiers = { git = "https://github.com/po4yka/ratatoskr-contracts.git", rev = "5b8bbb4220375f6236066a23b19e9d6f8faaaf28" }
 ratatoskr-operation-contracts = { git = "https://github.com/po4yka/ratatoskr-contracts.git", rev = "5b8bbb4220375f6236066a23b19e9d6f8faaaf28" }
-sha2 = "=0.10.9"
+sha2 = "0.10.9"
 
 [workspace.lints.rust]
 unsafe_code = "forbid"
