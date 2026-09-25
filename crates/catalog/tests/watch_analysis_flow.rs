@@ -7,7 +7,7 @@
     reason = "assertions and synthetic fixture construction in a test binary"
 )]
 
-use ratatoskr_github_catalog::provider::{ProviderRepositoryBody, ReqwestGithubApi};
+use ratatoskr_github_catalog::provider::{OwnerName, ProviderRepositoryBody, ReqwestGithubApi};
 use ratatoskr_github_catalog::rate_limit::{RateLimitLedger, TokenRef};
 use ratatoskr_github_catalog::test_support::TestDatabase;
 use ratatoskr_github_catalog::{
@@ -118,8 +118,11 @@ async fn metadata_delta_queues_and_dispatches_one_analysis_request()
         &ledger,
         &token,
         analysis_owner,
-        "acme",
-        "watched",
+        &OwnerName {
+            owner: "acme".to_owned(),
+            name: "watched".to_owned(),
+        },
+        fixed_now(),
     )
     .await?;
 
