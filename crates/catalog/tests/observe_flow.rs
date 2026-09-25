@@ -1,7 +1,7 @@
 //! End-to-end observe flow: wiremock provider plus disposable catalog
 //! database, exercising budget, conditional requests, and persistence.
 
-use ratatoskr_github_catalog::provider::ReqwestGithubApi;
+use ratatoskr_github_catalog::provider::{OwnerName, ReqwestGithubApi};
 use ratatoskr_github_catalog::rate_limit::{RateLimitLedger, TokenRef};
 use ratatoskr_github_catalog::test_support::TestDatabase;
 use ratatoskr_github_catalog::{ObserveOutcome, observe_repository};
@@ -80,8 +80,11 @@ async fn observe_repository_end_to_end_via_wiremock() -> Result<(), Box<dyn std:
         &ledger,
         &token,
         TenantRef::parse("user:018f0000-0000-7000-8000-000000000005")?,
-        "acme",
-        "widgets",
+        &OwnerName {
+            owner: "acme".to_owned(),
+            name: "widgets".to_owned(),
+        },
+        time::OffsetDateTime::from_unix_timestamp(1_767_225_600)?,
     )
     .await?;
     let ObserveOutcome::Observed { repository_id } = first else {
@@ -131,8 +134,11 @@ async fn observe_repository_end_to_end_via_wiremock() -> Result<(), Box<dyn std:
         &ledger,
         &token,
         TenantRef::parse("user:018f0000-0000-7000-8000-000000000005")?,
-        "acme",
-        "widgets",
+        &OwnerName {
+            owner: "acme".to_owned(),
+            name: "widgets".to_owned(),
+        },
+        time::OffsetDateTime::from_unix_timestamp(1_767_225_600)?,
     )
     .await?;
     assert_eq!(

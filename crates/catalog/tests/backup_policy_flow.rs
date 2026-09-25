@@ -14,8 +14,15 @@ use ratatoskr_github_catalog::{
     record_backup_policy_acknowledgment, test_support::TestDatabase,
 };
 use ratatoskr_identifiers::{EntityRef, Extensions};
+use time::format_description::well_known::Rfc3339;
 use time::{Duration, OffsetDateTime};
 use uuid::Uuid;
+
+/// A fixed anchor instant. Every use below is a relative offset from this value, so the anchor
+/// itself never needs to be real time.
+fn fixed_now() -> OffsetDateTime {
+    OffsetDateTime::parse("2026-01-01T00:00:00Z", &Rfc3339).expect("fixed RFC3339 instant")
+}
 
 #[test]
 fn derived_policy_contains_only_mirror_governed_repositories() {
@@ -42,7 +49,7 @@ fn derived_policy_contains_only_mirror_governed_repositories() {
 async fn published_policy_versions_advance_only_when_derived_state_changes() {
     let fixture = TestDatabase::create().await.expect("test database");
     insert_tracked_mirror(&fixture, "daily", "standard").await;
-    let now = OffsetDateTime::now_utc();
+    let now = fixed_now();
     mark_backup_policy_dirty(&fixture.database, now)
         .await
         .expect("dirty");
@@ -89,7 +96,7 @@ async fn published_policy_versions_advance_only_when_derived_state_changes() {
 async fn burst_policy_changes_publish_once_after_the_trailing_deadline() {
     let fixture = TestDatabase::create().await.expect("test database");
     insert_tracked_mirror(&fixture, "daily", "standard").await;
-    let now = OffsetDateTime::now_utc();
+    let now = fixed_now();
     mark_backup_policy_dirty(&fixture.database, now)
         .await
         .expect("first dirty");

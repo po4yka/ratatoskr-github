@@ -7,7 +7,7 @@
     reason = "assertions and synthetic fixture construction in a test binary"
 )]
 
-use ratatoskr_github_catalog::provider::{ProviderRepositoryBody, ReqwestGithubApi};
+use ratatoskr_github_catalog::provider::{OwnerName, ProviderRepositoryBody, ReqwestGithubApi};
 use ratatoskr_github_catalog::rate_limit::{RateLimitLedger, TokenRef};
 use ratatoskr_github_catalog::test_support::TestDatabase;
 use ratatoskr_github_catalog::{
@@ -19,8 +19,16 @@ use ratatoskr_github_catalog::{
 use ratatoskr_github_contracts::RepositoryAnalysisCompleted;
 use ratatoskr_identifiers::{EntityRef, Extensions, TenantRef, WireTimestamp};
 use time::OffsetDateTime;
+use time::format_description::well_known::Rfc3339;
 use wiremock::matchers::{method, path};
 use wiremock::{Mock, MockServer, ResponseTemplate};
+
+/// A fixed anchor instant. `dispatch_due_repository_analysis` and
+/// `evaluate_metadata_watches` both take `now` as an explicit parameter, so every call below
+/// passes this value instead of reading the real clock.
+fn fixed_now() -> OffsetDateTime {
+    OffsetDateTime::parse("2026-01-01T00:00:00Z", &Rfc3339).expect("fixed RFC3339 instant")
+}
 
 #[tokio::test]
 async fn watch_registration_baselines_existing_metadata() -> Result<(), Box<dyn std::error::Error>>
@@ -110,26 +118,28 @@ async fn metadata_delta_queues_and_dispatches_one_analysis_request()
         &ledger,
         &token,
         analysis_owner,
-        "acme",
-        "watched",
+        &OwnerName {
+            owner: "acme".to_owned(),
+            name: "watched".to_owned(),
+        },
+        fixed_now(),
     )
     .await?;
 
-    let dispatch =
-        dispatch_due_repository_analysis(&database.database, OffsetDateTime::now_utc()).await?;
+    let dispatch = dispatch_due_repository_analysis(&database.database, fixed_now()).await?;
     assert!(matches!(dispatch, AnalysisDispatch::Pending { .. }));
     assert_eq!(
         evaluate_metadata_watches(
             &database.database,
             repository.repository_id,
             &repository_body("changed description"),
-            OffsetDateTime::now_utc(),
+            fixed_now(),
         )
         .await?,
         WatchEvaluation::Unchanged
     );
     assert_eq!(
-        dispatch_due_repository_analysis(&database.database, OffsetDateTime::now_utc()).await?,
+        dispatch_due_repository_analysis(&database.database, fixed_now()).await?,
         AnalysisDispatch::NotDue
     );
     let requested: i64 = sqlx::query_scalar(
@@ -192,11 +202,11 @@ async fn matching_completion_resolves_the_pending_request_once()
         &database.database,
         repository.repository_id,
         &changed,
-        OffsetDateTime::now_utc(),
+        fixed_now(),
     )
     .await?;
     let AnalysisDispatch::Pending { request_id } =
-        dispatch_due_repository_analysis(&database.database, OffsetDateTime::now_utc()).await?
+        dispatch_due_repository_analysis(&database.database, fixed_now()).await?
     else {
         return Err("one queued request must dispatch".into());
     };
@@ -216,7 +226,7 @@ async fn matching_completion_resolves_the_pending_request_once()
         request_id,
         source_revision: request.source_revision,
         analysis_result_ref: result.clone(),
-        completed_at: WireTimestamp::now(),
+        completed_at: WireTimestamp::now(), // wall-clock: opaque fixture value, unused by any assertion in this file
         extensions: Extensions::new(),
     };
     assert_eq!(

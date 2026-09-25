@@ -33,7 +33,6 @@ arguments or logs.
 
 ```bash
 cargo fetch --locked
-cargo deny --locked check
 cargo fmt --all -- --check
 cargo clippy --workspace --all-targets --locked -- -D warnings
 cargo build --workspace --locked
@@ -41,6 +40,9 @@ cargo test --workspace --locked
 cargo test --workspace --locked --doc
 cargo build --workspace --locked --release
 ```
+
+`cargo deny --locked check` runs in its own `deny` job in `.github/workflows/ci.yml`, separate from
+the gate above, so a new RustSec advisory cannot hide a clippy or test failure behind it.
 
 The file-size ratchet is the one check that Cargo cannot express:
 

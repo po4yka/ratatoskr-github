@@ -89,9 +89,10 @@ async fn stored_validators(
     Ok(stored.unwrap_or((None, None, None)))
 }
 
-/// Observes one repository by alias: enforces the token budget, fetches
+/// Observes the repository `alias` names: enforces the token budget, fetches
 /// conditionally, applies rename evidence when present, and records fresh
-/// bodies into the projection and revision history.
+/// bodies into the projection and revision history. `now` is the instant metadata
+/// watches are evaluated at, so an analysis request it queues is due from `now`.
 ///
 /// # Errors
 ///
@@ -102,8 +103,8 @@ pub async fn observe_repository<G>(
     ledger: &RateLimitLedger,
     token: &TokenRef,
     analysis_owner: TenantRef,
-    owner: &str,
-    name: &str,
+    alias: &OwnerName,
+    now: time::OffsetDateTime,
 ) -> Result<ObserveOutcome, ObserveError>
 where
     G: crate::provider::GithubApi,
@@ -113,7 +114,7 @@ where
         return Ok(ObserveOutcome::RateLimited { retry_at });
     }
 
-    let requested_value = format!("{owner}/{name}");
+    let requested_value = alias.to_string();
     let known_repository = resolve_alias(database, AliasKind::OwnerName, &requested_value).await?;
     let (stored_etag, stored_readme_etag, stored_readme_revision) = match known_repository {
         Some(repository_id) => stored_validators(database, repository_id).await?,
@@ -121,7 +122,7 @@ where
     };
 
     let reply = gateway
-        .fetch_repository(None, owner, name, stored_etag.as_deref())
+        .fetch_repository(None, &alias.owner, &alias.name, stored_etag.as_deref())
         .await?;
     ledger.observe(token, &reply.rate_limit);
 
@@ -145,7 +146,12 @@ where
             )
             .await?;
             let readme_reply = gateway
-                .fetch_readme(None, owner, name, stored_readme_etag.as_deref())
+                .fetch_readme(
+                    None,
+                    &alias.owner,
+                    &alias.name,
+                    stored_readme_etag.as_deref(),
+                )
                 .await?;
             ledger.observe(token, &readme_reply.rate_limit);
             let (readme, readme_etag) = match readme_reply.outcome {
@@ -187,13 +193,7 @@ where
                 },
             )
             .await?;
-            evaluate_metadata_watches(
-                database,
-                identity.repository_id,
-                &fresh.body,
-                time::OffsetDateTime::now_utc(),
-            )
-            .await?;
+            evaluate_metadata_watches(database, identity.repository_id, &fresh.body, now).await?;
             Ok(ObserveOutcome::Observed {
                 repository_id: identity.repository_id,
             })
