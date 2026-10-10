@@ -64,6 +64,11 @@ pub fn fixed_now() -> OffsetDateTime {
     OffsetDateTime::parse("2026-01-01T00:00:00Z", &Rfc3339).expect("fixed RFC3339 instant")
 }
 
+/// The same fixed instant as a wire timestamp, for fact payloads and envelopes a test builds.
+pub fn fixed_wire_now() -> WireTimestamp {
+    WireTimestamp::parse("2026-01-01T00:00:00Z").expect("fixed canonical wire timestamp")
+}
+
 /// Creates both streams, purges them, and recreates the given durables with the S04 settings.
 pub async fn provision(
     client: &async_nats::Client,
@@ -191,7 +196,7 @@ pub fn fact_envelope<P: EventPayload>(
     let mut envelope = EventEnvelope {
         event_id: EventId(event_id),
         event_type: P::event_type(),
-        occurred_at: WireTimestamp::now(),
+        occurred_at: fixed_wire_now(),
         producer: ProducerName::parse(producer)?,
         aggregate_id: EntityRef::parse(&format!("repository:{}", Uuid::now_v7()))?,
         correlation_id: EntityRef::parse(&format!("event:{event_id}"))?,

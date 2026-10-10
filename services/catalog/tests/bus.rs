@@ -16,8 +16,7 @@ use ratatoskr_github_catalog_service::bus::{Bus, BusError, BusSettings};
 use ratatoskr_github_contracts::{
     AnalysisFailureCode, RepositoryAnalysisCompleted, RepositoryAnalysisFailed,
 };
-use ratatoskr_identifiers::{EntityRef, Extensions, WireTimestamp};
-use time::OffsetDateTime;
+use ratatoskr_identifiers::{EntityRef, Extensions};
 use tokio::sync::watch;
 use uuid::Uuid;
 
@@ -157,7 +156,7 @@ fn completed_for(
             "repository_analysis_result:{}",
             Uuid::now_v7()
         ))?,
-        completed_at: WireTimestamp::now(),
+        completed_at: bus_support::fixed_wire_now(),
         extensions: Extensions::default(),
     })
 }
@@ -193,7 +192,7 @@ async fn completed_and_failed_facts_settle_their_requests_and_redelivery_changes
         source_revision: second.source_revision.clone(),
         failure_code: AnalysisFailureCode::SourceUnavailable,
         retryable: true,
-        failed_at: WireTimestamp::now(),
+        failed_at: bus_support::fixed_wire_now(),
         extensions: Extensions::default(),
     };
     let failed_id = Uuid::now_v7();
@@ -297,11 +296,7 @@ async fn a_due_backup_policy_is_published_once_and_its_acknowledgement_is_record
     .bind(Uuid::now_v7())
     .execute(database.database.pool())
     .await?;
-    mark_backup_policy_dirty(
-        &database.database,
-        OffsetDateTime::now_utc() - time::Duration::seconds(300),
-    )
-    .await?;
+    mark_backup_policy_dirty(&database.database, bus_support::fixed_now()).await?;
     let running = start(&url, &database).await?;
 
     eventually("the policy command to be published", || async {

@@ -18,8 +18,7 @@ use ratatoskr_github_catalog::{
 use ratatoskr_github_catalog_service::Lifecycle;
 use ratatoskr_github_catalog_service::bus::{Bus, BusSettings};
 use ratatoskr_github_contracts::RepositoryAnalysisCompleted;
-use ratatoskr_identifiers::{EntityRef, Extensions, WireTimestamp};
-use time::OffsetDateTime;
+use ratatoskr_identifiers::{EntityRef, Extensions};
 use tokio::sync::watch;
 use uuid::Uuid;
 
@@ -204,11 +203,7 @@ async fn the_github_identity_relays_and_consumes_what_it_needs_and_is_refused_th
     .bind(Uuid::now_v7())
     .execute(database.database.pool())
     .await?;
-    mark_backup_policy_dirty(
-        &database.database,
-        OffsetDateTime::now_utc() - time::Duration::seconds(300),
-    )
-    .await?;
+    mark_backup_policy_dirty(&database.database, bus_support::fixed_now()).await?;
 
     let bus = Bus::connect(&BusSettings {
         url: broker.url(),
@@ -337,7 +332,7 @@ async fn publish_results(
             "repository_analysis_result:{}",
             Uuid::now_v7()
         ))?,
-        completed_at: WireTimestamp::now(),
+        completed_at: bus_support::fixed_wire_now(),
         extensions: Extensions::default(),
     };
     let completed_id = Uuid::now_v7();

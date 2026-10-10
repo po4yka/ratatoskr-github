@@ -50,7 +50,7 @@ async fn seed_events(
         request_id: request.request_id,
         source_revision: request.source_revision.clone(),
         analysis_result_ref: EntityRef::parse(&format!("analysis:{}", Uuid::now_v7()))?,
-        completed_at: WireTimestamp::now(),
+        completed_at: WireTimestamp::parse("2026-10-01T00:00:00Z")?,
         extensions: Extensions::new(),
     })?;
     let failed = serde_json::to_value(RepositoryAnalysisFailed {
@@ -61,7 +61,7 @@ async fn seed_events(
         source_revision: request.source_revision.clone(),
         failure_code: AnalysisFailureCode::SourceUnavailable,
         retryable: true,
-        failed_at: WireTimestamp::now(),
+        failed_at: WireTimestamp::parse("2026-10-01T00:00:00Z")?,
         extensions: Extensions::new(),
     })?;
     let sync_command = json!({
