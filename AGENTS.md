@@ -22,11 +22,15 @@ It does **not** perform Git mirroring or prove that a backup can be restored. Ph
 
 ## Current phase
 
-Implementation-plan item 1 is complete. The Rust workspace, strict configuration, structured
-telemetry, operator health routes, one editable `schema.sql`, disposable-database tests, and CI gate
-exist. OAuth/PAT flows, provider queries, sync workers, mutations, public APIs, and event handlers
-remain absent. Do not assume anything beyond the service foundation exists unless it is present in
-the checkout.
+The service foundation and most of the catalog behaviour exist: strict configuration, structured
+telemetry, operator health routes, one editable `schema.sql`, disposable-database tests, the CI gate,
+PAT and OAuth credential handling, provider queries, star and list synchronization, mutations, the
+Edge-authenticated repository API, desired-policy publication, repository analysis requests, account
+erasure, and the fleet bus (an outbox relay, three supervised result consumers and the dispatch
+loops under the service's own NATS identity, plus the bearer-authorized README byte route for
+Knowledge). Still absent: live consumption of `cmd.github.sync.requested.v1` over the bus, the NATS
+transport of account erasure, and an internet-facing API. Do not assume anything beyond this exists
+unless it is present in the checkout.
 
 When creating initial implementation:
 

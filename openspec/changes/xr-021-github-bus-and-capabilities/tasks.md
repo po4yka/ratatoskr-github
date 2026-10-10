@@ -14,20 +14,20 @@
 
 ## 4. Bus relay, consumers and dispatch loops (S02, S04)
 
-- [ ] 4.1 RED: add `services/catalog/tests/bus.rs` against a real JetStream broker; it fails because `serve()` has no bus.
-- [ ] 4.2 GREEN: add `BusConfig`, `services/catalog/src/bus.rs`, the relay, the three consumers, the dispatch ticker and the supervised lifecycle.
+- [x] 4.1 RED: add `services/catalog/tests/bus.rs` against a real JetStream broker; it fails because `serve()` has no bus.
+- [x] 4.2 GREEN: add `BusConfig`, `services/catalog/src/bus.rs`, the relay, the three consumers, the dispatch ticker and the supervised lifecycle.
 
 ## 5. Authorized README byte endpoint (S09)
 
 - [x] 5.1 RED: add `services/catalog/tests/readme_blob_route.rs`; every case answers 404 today.
-- [ ] 5.2 GREEN: add the route, the constant-time bearer check and `RATATOSKR__INTERNAL__READER_SERVICE_SECRET`.
+- [x] 5.2 GREEN: add the route, the constant-time bearer check and `RATATOSKR__INTERNAL__READER_SERVICE_SECRET`.
 
 ## 6. Authorized broker and identity fragment (S03)
 
-- [ ] 6.1 RED: add `services/catalog/tests/authorized_bus.rs` which reads `deploy/nats/identity.conf`; it fails because the fragment is absent.
-- [ ] 6.2 GREEN: add `deploy/nats/identity.conf` and document `/etc/ratatoskr/github.nkey`.
+- [x] 6.1 RED: add `services/catalog/tests/authorized_bus.rs` which reads `deploy/nats/identity.conf`; it fails because the fragment is absent.
+- [x] 6.2 GREEN: add `deploy/nats/identity.conf` and document `/etc/ratatoskr/github.nkey`.
 
 ## 7. Documentation and final gate
 
-- [ ] 7.1 Update `AGENTS.md` current phase, `README.md` and `docs/INTERFACES.md`; documentation has no RED.
-- [ ] 7.2 Run the full local gate and `openspec validate --all --strict`.
+- [x] 7.1 Update `AGENTS.md` current phase, `README.md` and `docs/INTERFACES.md`; documentation has no RED.
+- [x] 7.2 Run the full local gate and `openspec validate --all --strict`.

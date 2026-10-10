@@ -2,7 +2,7 @@
 
 `ratatoskr-github` is the GitHub Catalog bounded context for Ratatoskr. It records what repositories a user has starred or chosen to track, preserves GitHub metadata and list membership, coordinates repository analysis, and publishes the desired backup state consumed by Git Vault.
 
-> **Status:** a Rust service runs locally with strict configuration, structured process telemetry, operator health routes (`/live`, `/ready`, `/metrics`, `/version`), stable repository identity and star/list synchronization, encrypted replacement-PAT storage, audited repository modes and provider mutations, and desired-backup-policy publication. A separate loopback domain listener serves Edge-authenticated repository preview and confirmed `metadata`/`track`/`star` actions with durable replay and component-level partial results. OAuth, an internet-facing API, and live fleet-bus handlers remain planned.
+> **Status:** a Rust service runs locally with strict configuration, structured process telemetry, operator health routes (`/live`, `/ready`, `/metrics`, `/version`), stable repository identity and star/list synchronization, encrypted replacement-PAT storage, audited repository modes and provider mutations, and desired-backup-policy publication. A separate loopback domain listener serves Edge-authenticated repository preview and confirmed `metadata`/`track`/`star` actions with durable replay and component-level partial results. The service takes part in the fleet bus: an outbox relay, three supervised result consumers and the dispatch loops run under its own narrow NATS identity, and a bearer-authorized byte route serves stored README bytes to Knowledge. An internet-facing API remains planned.
 
 > [!IMPORTANT]
 > **Ratatoskr is in development.** No database holds data that has to survive a schema change.
@@ -218,7 +218,7 @@ A later failure does not roll back an earlier successful external action. Respon
 
 GitHub Catalog stores desired state; Git Vault owns actual storage state.
 
-Catalog uses `ratatoskr-backup-contracts` at immutable commit `0d6ddfb475fd47a153a03a69222a5a27cc48e067`. A durable trailing debounce coalesces mode/star-governance changes, then atomically writes an immutable policy version and `cmd.vault.target.desired.v1` outbox row. Vault feedback arrives as `evt.vault.backup_policy.acknowledged.v1`; accepted means only that Vault accepted the requested policy version, not that a mirror, retention action, or restore succeeded.
+Catalog uses `ratatoskr-backup-contracts` at immutable commit `ad16855c4e7f3d52cd118274faa3b8f3ab4da576`. A durable trailing debounce coalesces mode/star-governance changes, then atomically writes an immutable policy version and a complete `cmd.vault.backup_policy.apply_requested.v1` command envelope to the outbox. Vault feedback arrives as `evt.vault.backup_policy.acknowledged.v1`; accepted means only that Vault accepted the requested policy version, not that a mirror, retention action, or restore succeeded.
 
 Planned policy levels:
 
@@ -241,10 +241,10 @@ include_issues
 offsite_required
 ```
 
-Policy changes publish commands such as:
+Policy changes publish the command:
 
 ```text
-cmd.vault.target.desired.v1
+cmd.vault.backup_policy.apply_requested.v1
 ```
 
 Catalog never inspects Vault's filesystem or writes its database. Vault reports convergence and verification through contracts.
@@ -253,15 +253,39 @@ Catalog never inspects Vault's filesystem or writes its database. Vault reports 
 
 Repository analysis belongs to `ratatoskr-knowledge`.
 
-When metadata or README content changes, Catalog may publish:
+When metadata or README content changes, Catalog publishes the event:
 
 ```text
-knowledge.repository_analysis.requested.v1
+evt.knowledge.repository_analysis.requested.v1
 ```
+
+Knowledge answers with `evt.knowledge.repository_analysis.completed.v1` or `evt.knowledge.repository_analysis.failed.v1`. Every outbox row stores the complete canonical envelope under its class-prefixed subject, and the envelope id is the row id.
 
 Knowledge returns a versioned result containing purpose, technology stack, architectural summary, concepts, use cases, target audience, maturity, dependencies, confidence, and hallucination-risk fields. Catalog stores only the accepted analysis reference and user-facing projection required for its API.
 
 Changes to star lists or backup policy do not by themselves change repository content and must not trigger expensive reanalysis.
+
+## Fleet bus
+
+The process connects to the fleet NATS broker when `RATATOSKR__BUS__URL` is set. Without it the service still serves its API and queues outbox rows, but nothing relays them.
+
+```text
+RATATOSKR__BUS__URL=nats://127.0.0.1:4222
+RATATOSKR__BUS__NKEY_SEED_PATH=/etc/ratatoskr/github.nkey
+```
+
+The seed is read from the absolute path at runtime and never logged. A non-loopback broker must use `tls://` and an identity. The identity's permissions are the GITHUB stanza in `deploy/nats/identity.conf`, a byte-equal copy of the stanza in the single reviewed ACL held by `ratatoskr-platform`.
+
+Edge provisions the three durables this service consumes on `ratatoskr_events`, and the service verifies them at startup and never creates one: `ratatoskr_github_analysis_completed` (`evt.knowledge.repository_analysis.completed.v1`), `ratatoskr_github_analysis_failed` (`evt.knowledge.repository_analysis.failed.v1`) and `ratatoskr_github_policy_acknowledged` (`evt.vault.backup_policy.acknowledged.v1`), each explicit-ack with a 30 s ack wait. It publishes `evt.knowledge.repository_analysis.requested.v1` and `cmd.vault.backup_policy.apply_requested.v1`. When the relay, a consumer or the broker connection stops before an orderly shutdown, readiness goes false and the process exits non-zero. A publish that times out is indistinguishable from a denied one: check the NATS server log for a `Publish Violation`.
+
+Knowledge reads README bytes over the loopback domain listener:
+
+```text
+GET /internal/v1/readme-blobs/{sha256_hex}
+Authorization: Bearer <RATATOSKR__INTERNAL__READER_SERVICE_SECRET>
+```
+
+It answers 200 with the stored bytes and `X-Content-SHA256`, 401 without the secret, and 404 for an unknown digest. The route is not mounted while the secret is unset, and Edge never routes to it.
 
 ## Repository watches
 

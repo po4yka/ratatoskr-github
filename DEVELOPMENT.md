@@ -3,7 +3,7 @@
 > Status: Active  
 > Last reviewed: 2026-08-23
 
-The service foundation and repository domain API are implemented. The real process binds loopback operator and Edge-authenticated domain listeners, stores replacement PATs encrypted, serves read-only repository previews, and executes confirmed `metadata`/`track`/`star` actions with durable exact replay and truthful component outcomes. Snapshot, list, mode, mutation, watch, analysis-request, and desired-policy behavior remains as documented in the repository specs. OAuth and live fleet-bus handling are not implemented.
+The service foundation and repository domain API are implemented. The real process binds loopback operator and Edge-authenticated domain listeners, stores replacement PATs encrypted, serves read-only repository previews, and executes confirmed `metadata`/`track`/`star` actions with durable exact replay and truthful component outcomes. Snapshot, list, mode, mutation, watch, analysis-request, and desired-policy behavior remains as documented in the repository specs. The fleet bus relay and result consumers run when a broker is configured; live consumption of the sync command is not implemented.
 
 ### Local process configuration
 
@@ -18,6 +18,14 @@ RATATOSKR__STORAGE__DATABASE_URL=postgres://github:github@127.0.0.1:5435/github
 RATATOSKR__PROVIDER__BASE_URL=https://api.github.com
 RATATOSKR__CREDENTIALS__ENCRYPTION_KEY_HEX=<64 lowercase or uppercase hex characters>
 RATATOSKR__CREDENTIALS__KEY_VERSION=<non-secret key label>
+```
+
+The fleet bus is configured separately and is optional for a local process:
+
+```bash
+RATATOSKR__BUS__URL=nats://127.0.0.1:4222
+RATATOSKR__BUS__NKEY_SEED_PATH=/etc/ratatoskr/github.nkey
+RATATOSKR__INTERNAL__READER_SERVICE_SECRET=<shared bearer secret for the README byte route>
 ```
 
 Both listeners must remain distinct loopback sockets. Provider HTTP is accepted
@@ -57,6 +65,8 @@ docker compose up -d --wait
 ```
 
 Tests use `GITHUB_CATALOG_TEST_DATABASE_URL`, which defaults to `postgres://github:github@127.0.0.1:5435/github`; CI provisions its own service container.
+
+The bus tests need a JetStream broker: `GITHUB_TEST_NATS_URL` defaults to `nats://127.0.0.1:4225`, which the compose stack publishes. The authorization test also starts its own `nats-server` from `deploy/nats/identity.conf`, so a `nats-server` binary must be on `PATH`; it picks a free port from 57102 to 57119. A missing broker or binary fails those tests rather than skipping them. CI installs a pinned, checksummed `nats-server` and starts a broker on 4225.
 
 ## Code size limits
 

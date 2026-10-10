@@ -43,14 +43,38 @@ The platform scheduler publishes this service's sync commands to `cmd.github.syn
 
 Schedule registration is not an interface of this service: operators register the frequent-incremental and periodic-full schedules through platform's documented mechanism (see README "Scheduled synchronization" for this repository's two registration statements).
 
-Live JetStream subscription is a later integration changeset once credential storage exists; consumption is exercised at this domain boundary until then.
+Live JetStream consumption of the sync command is a later integration changeset; it is exercised at this domain boundary until then.
 
 ## Outbound
 
-Repository/star/list/policy events, operation progress/results, Knowledge analysis requests, and Vault desired-target events. An enabled metadata-delta watch creates a paced
-`knowledge.repository_analysis.requested.v1` outbox payload with bounded attributes and explicit
-README absence; Catalog consumes matching `knowledge.repository_analysis.completed.v1` and
-`knowledge.repository_analysis.failed.v1` terminal facts through its idempotent inbox.
+Repository/star/list/policy events, operation progress/results, Knowledge analysis requests, and Vault desired-policy commands. Every outbox row stores the complete canonical envelope
+(`EventEnvelope` or `CommandEnvelope`) under a class-prefixed subject, and the envelope id is the
+row id, which the relay sends as `Nats-Msg-Id`. Two subjects are relayed:
+
+- `evt.knowledge.repository_analysis.requested.v1`, an `EventEnvelope` around
+  `RepositoryAnalysisRequested` (producer `ratatoskr-github`, aggregate `repository:<id>`,
+  correlation `repository_analysis:<request id>`, tenant the owner), created for an enabled
+  metadata-delta watch and for each new combined metadata and README source revision;
+- `cmd.vault.backup_policy.apply_requested.v1`, a `CommandEnvelope` around
+  `VaultBackupPolicyApplyRequested` (aggregate and correlation `backup_policy:<version>`, no
+  tenant because the policy is catalog-wide).
+
+## Inbound facts
+
+Three Edge-provisioned durables on `ratatoskr_events` are verified, never created:
+`evt.knowledge.repository_analysis.completed.v1` and `evt.knowledge.repository_analysis.failed.v1`
+(producer `ratatoskr-knowledge`, tenant required and equal to the payload owner) settle the
+matching request through the idempotent inbox, and `evt.vault.backup_policy.acknowledged.v1`
+(producer `ratatoskr-vault`) records Vault's decision once. The inbox message id is the envelope
+event id, so a redelivery changes nothing. Input that can never be processed is terminated; a
+transient persistence failure is redelivered after two seconds.
+
+## README bytes for Knowledge
+
+`GET /internal/v1/readme-blobs/{sha256_hex}` on the loopback domain listener returns the stored
+README bytes with `X-Content-SHA256` for the holder of
+`RATATOSKR__INTERNAL__READER_SERVICE_SECRET` as a bearer token, 401 otherwise, and 404 for an
+unknown digest. The route is absent while the secret is unset and is not in Edge's prefix table.
 
 ## Provider boundary
 
