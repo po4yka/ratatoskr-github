@@ -1,4 +1,5 @@
 use std::net::{IpAddr, Ipv4Addr, SocketAddr};
+use std::path::{Path, PathBuf};
 use std::{error, fmt};
 
 use secrecy::SecretString;
@@ -19,6 +20,10 @@ pub struct Config {
     pub provider: ProviderConfig,
     /// Owned durable storage configuration.
     pub storage: StorageConfig,
+    /// Fleet message bus configuration.
+    pub bus: BusConfig,
+    /// Service-to-service routes served on the domain listener.
+    pub internal: InternalConfig,
     /// Credential encryption configuration.
     pub credentials: CredentialsConfig,
     /// GitHub OAuth application configuration.
@@ -63,6 +68,92 @@ impl fmt::Debug for StorageConfig {
         formatter
             .debug_struct("StorageConfig")
             .field("database_url", &"[REDACTED]")
+            .finish()
+    }
+}
+
+/// Fleet message bus location and identity (XR-021 CONTRACTS.md S03).
+///
+/// The bus is optional for a local process: without a URL the service serves its API and queues
+/// outbox rows, but nothing relays them.
+#[derive(Debug, Clone, Serialize)]
+pub struct BusConfig {
+    /// Broker URL: `nats://` for a loopback broker, `tls://` for any other.
+    pub url: Option<String>,
+    nkey_seed_path: Option<PathBuf>,
+}
+
+impl BusConfig {
+    /// Absolute path of the nkey seed file. The seed is read at connect time and never logged.
+    #[must_use]
+    pub fn nkey_seed_path(&self) -> Option<&Path> {
+        self.nkey_seed_path.as_deref()
+    }
+
+    fn validate(&self) -> Result<(), ConfigError> {
+        let Some(url) = &self.url else {
+            return match self.nkey_seed_path {
+                None => Ok(()),
+                Some(_) => Err(ConfigError::new(
+                    "RATATOSKR__BUS__URL",
+                    "must be configured with RATATOSKR__BUS__NKEY_SEED_PATH",
+                )),
+            };
+        };
+        let parsed = reqwest::Url::parse(url).map_err(|_| bus_url_error())?;
+        let bounded = matches!(parsed.scheme(), "nats" | "tls")
+            && parsed.username().is_empty()
+            && parsed.password().is_none()
+            && parsed.query().is_none()
+            && parsed.fragment().is_none()
+            && matches!(parsed.path(), "" | "/");
+        let loopback = parsed
+            .host_str()
+            .and_then(|host| host.trim_matches(['[', ']']).parse::<IpAddr>().ok())
+            .is_some_and(|address| address.is_loopback());
+        if !bounded || parsed.host_str().is_none() {
+            return Err(bus_url_error());
+        }
+        if !loopback && (parsed.scheme() != "tls" || self.nkey_seed_path.is_none()) {
+            return Err(ConfigError::new(
+                "RATATOSKR__BUS__URL",
+                "must use tls:// with RATATOSKR__BUS__NKEY_SEED_PATH unless the broker is on loopback",
+            ));
+        }
+        Ok(())
+    }
+}
+
+fn bus_url_error() -> ConfigError {
+    ConfigError::new(
+        "RATATOSKR__BUS__URL",
+        "must be a nats:// or tls:// origin without credentials, path or query",
+    )
+}
+
+/// Service-to-service routes served on the loopback domain listener.
+#[derive(Clone, Serialize)]
+pub struct InternalConfig {
+    #[serde(skip_serializing)]
+    reader_service_secret: Option<SecretString>,
+}
+
+impl InternalConfig {
+    /// The bearer secret Knowledge presents to read README bytes; the route is absent without it.
+    #[must_use]
+    pub fn reader_service_secret(&self) -> Option<&SecretString> {
+        self.reader_service_secret.as_ref()
+    }
+}
+
+impl fmt::Debug for InternalConfig {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("InternalConfig")
+            .field(
+                "reader_service_secret",
+                &self.reader_service_secret.as_ref().map(|_| "[REDACTED]"),
+            )
             .finish()
     }
 }
@@ -318,6 +409,7 @@ impl Config {
     fn validate(&self) -> Result<(), ConfigError> {
         self.credentials.validate()?;
         self.github_oauth.validate()?;
+        self.bus.validate()?;
         if self.api.listen_address == self.admin.listen_address {
             return Err(ConfigError::new(
                 "RATATOSKR__API__LISTEN_ADDRESS",
@@ -382,6 +474,28 @@ fn apply_entry(config: &mut Config, key: &str, value: &str) -> Result<(), Config
                 .parse::<sqlx::postgres::PgConnectOptions>()
                 .map_err(|_| ConfigError::new(key, "must be a PostgreSQL connection URL"))?;
             value.clone_into(&mut config.storage.database_url);
+        }
+        "RATATOSKR__BUS__URL" => {
+            config.bus.url = Some(value.to_owned());
+        }
+        "RATATOSKR__BUS__NKEY_SEED_PATH" => {
+            let path = PathBuf::from(value);
+            if !path.is_absolute() {
+                return Err(ConfigError::new(key, "must be an absolute path"));
+            }
+            config.bus.nkey_seed_path = Some(path);
+        }
+        "RATATOSKR__INTERNAL__READER_SERVICE_SECRET" => {
+            if value.is_empty()
+                || value.len() > 256
+                || value.chars().any(|c| c.is_whitespace() || c.is_control())
+            {
+                return Err(ConfigError::new(
+                    key,
+                    "must be 1 to 256 characters without whitespace or control characters",
+                ));
+            }
+            config.internal.reader_service_secret = Some(SecretString::from(value.to_owned()));
         }
         "RATATOSKR__CREDENTIALS__ENCRYPTION_KEY_HEX" => {
             config.credentials.encryption_key_hex = Some(value.to_owned());
@@ -476,6 +590,13 @@ impl Default for Config {
             },
             storage: StorageConfig {
                 database_url: "postgres://github:github@127.0.0.1:5435/github".to_owned(),
+            },
+            bus: BusConfig {
+                url: None,
+                nkey_seed_path: None,
+            },
+            internal: InternalConfig {
+                reader_service_secret: None,
             },
             credentials: CredentialsConfig {
                 encryption_key_hex: None,

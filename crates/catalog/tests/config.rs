@@ -186,3 +186,103 @@ fn recognized_overrides_change_exactly_their_own_field() {
         "a non-loopback admin address must be refused"
     );
 }
+
+#[test]
+fn bus_configuration_is_bounded_and_secret_free() -> Result<(), Box<dyn std::error::Error>> {
+    let configured = Config::from_environment([
+        ("RATATOSKR__BUS__URL", "nats://127.0.0.1:4222"),
+        (
+            "RATATOSKR__BUS__NKEY_SEED_PATH",
+            "/etc/ratatoskr/github.nkey",
+        ),
+    ])?;
+    let encoded = serde_json::to_value(&configured)?;
+    assert_eq!(
+        encoded
+            .pointer("/bus/url")
+            .and_then(serde_json::Value::as_str),
+        Some("nats://127.0.0.1:4222")
+    );
+
+    // A loopback broker needs no identity; nothing configured means no bus at all.
+    assert!(Config::from_environment([("RATATOSKR__BUS__URL", "nats://127.0.0.1:4222")]).is_ok());
+    assert_eq!(
+        serde_json::to_value(Config::default())?.pointer("/bus/url"),
+        Some(&serde_json::Value::Null)
+    );
+
+    for (label, entries) in [
+        (
+            "a seed without a broker",
+            vec![(
+                "RATATOSKR__BUS__NKEY_SEED_PATH",
+                "/etc/ratatoskr/github.nkey",
+            )],
+        ),
+        (
+            "a relative seed path",
+            vec![
+                ("RATATOSKR__BUS__URL", "nats://127.0.0.1:4222"),
+                ("RATATOSKR__BUS__NKEY_SEED_PATH", "github.nkey"),
+            ],
+        ),
+        (
+            "an unsupported scheme",
+            vec![("RATATOSKR__BUS__URL", "http://127.0.0.1:4222")],
+        ),
+        (
+            "credentials in the URL",
+            vec![("RATATOSKR__BUS__URL", "nats://user:secret@127.0.0.1:4222")],
+        ),
+        (
+            "a remote broker without TLS",
+            vec![
+                ("RATATOSKR__BUS__URL", "nats://broker.example:4222"),
+                (
+                    "RATATOSKR__BUS__NKEY_SEED_PATH",
+                    "/etc/ratatoskr/github.nkey",
+                ),
+            ],
+        ),
+        (
+            "a remote broker without an identity",
+            vec![("RATATOSKR__BUS__URL", "tls://broker.example:4222")],
+        ),
+    ] {
+        assert!(
+            Config::from_environment(entries).is_err(),
+            "{label} must be refused"
+        );
+    }
+    assert!(
+        Config::from_environment([
+            ("RATATOSKR__BUS__URL", "tls://broker.example:4222"),
+            (
+                "RATATOSKR__BUS__NKEY_SEED_PATH",
+                "/etc/ratatoskr/github.nkey"
+            ),
+        ])
+        .is_ok(),
+        "a remote broker over TLS with an identity is accepted"
+    );
+    Ok(())
+}
+
+#[test]
+fn reader_service_secret_is_accepted_but_never_serialized_or_debugged()
+-> Result<(), Box<dyn std::error::Error>> {
+    let secret = "synthetic-reader-service-secret-value";
+    let config =
+        Config::from_environment([("RATATOSKR__INTERNAL__READER_SERVICE_SECRET", secret)])?;
+
+    assert!(!serde_json::to_string(&config)?.contains(secret));
+    assert!(!format!("{config:?}").contains(secret));
+    for refused in ["", "has a space", "line\nbreak"] {
+        assert!(
+            Config::from_environment([("RATATOSKR__INTERNAL__READER_SERVICE_SECRET", refused)])
+                .is_err(),
+            "an unusable secret was accepted: {refused:?}"
+        );
+    }
+    Ok(())
+}

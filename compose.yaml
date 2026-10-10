@@ -14,3 +14,12 @@ services:
       interval: 1s
       timeout: 5s
       retries: 30
+
+  # JetStream broker for the bus tests only. It is unauthenticated and bound to loopback; the
+  # authorization-enabled test starts its own broker from deploy/nats/identity.conf.
+  nats:
+    image: nats:2
+    container_name: ratatoskr-github-nats
+    command: ["-js"]
+    ports:
+      - "127.0.0.1:4225:4222"

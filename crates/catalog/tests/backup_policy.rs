@@ -1,10 +1,5 @@
 //! The published policy is a complete Vault command envelope (XR-021 CONTRACTS.md S09).
 
-#![expect(
-    clippy::expect_used,
-    reason = "integration tests stop immediately when their disposable fixture fails"
-)]
-
 use ratatoskr_backup_contracts::VaultBackupPolicyApplyRequested;
 use ratatoskr_event_envelope::CommandEnvelope;
 use ratatoskr_github_catalog::test_support::TestDatabase;

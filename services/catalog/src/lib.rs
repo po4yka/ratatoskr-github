@@ -12,6 +12,7 @@ use axum::middleware::{self, Next};
 use axum::response::Response;
 use axum::routing::get;
 
+pub mod bus;
 mod readme_blobs;
 mod repository_action_attempts;
 mod repository_api;
@@ -21,6 +22,7 @@ pub use repository_api::{RepositoryApiState, domain_router};
 const STARTING: u8 = 0;
 const READY: u8 = 1;
 const DRAINING: u8 = 2;
+const FAILED: u8 = 3;
 
 /// A bounded, non-secret operator command.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -164,6 +166,11 @@ impl Lifecycle {
     /// Starts drain and makes readiness fail.
     pub fn begin_drain(&self) {
         self.state.store(DRAINING, Ordering::Release);
+    }
+
+    /// Makes readiness fail because a supervised dependency stopped before an orderly shutdown.
+    pub fn mark_failed(&self) {
+        self.state.store(FAILED, Ordering::Release);
     }
 
     /// Reports whether startup has completed and drain has not begun.

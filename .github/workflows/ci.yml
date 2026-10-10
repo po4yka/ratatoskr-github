@@ -21,6 +21,7 @@ jobs:
     timeout-minutes: 30
     env:
       GITHUB_CATALOG_TEST_DATABASE_URL: postgres://github:github@127.0.0.1:5432/github
+      GITHUB_TEST_NATS_URL: nats://127.0.0.1:4225
     services:
       postgres:
         image: postgres:17@sha256:e38411452a464af89e5adadb8d223bf53b898d47d6ef918b2d58c08707350449
@@ -41,6 +42,29 @@ jobs:
         with:
           persist-credentials: false
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+      # The bus tests need a JetStream broker, and the authorization test starts its own from
+      # deploy/nats/identity.conf, so the binary is installed from a pinned, checksummed release.
+      - name: Install nats-server
+        env:
+          NATS_VERSION: v2.15.0
+          NATS_SHA256: 5d2c51caca950333aba84911df7d377f826f3a59ec36061c6539105084f65c92
+        run: |
+          set -euo pipefail
+          archive="nats-server-${NATS_VERSION}-linux-amd64.tar.gz"
+          curl -fsSL -o "${RUNNER_TEMP}/${archive}" "https://github.com/nats-io/nats-server/releases/download/${NATS_VERSION}/${archive}"
+          echo "${NATS_SHA256}  ${RUNNER_TEMP}/${archive}" | sha256sum --check --strict
+          tar -xzf "${RUNNER_TEMP}/${archive}" -C "${RUNNER_TEMP}" --strip-components=1 "nats-server-${NATS_VERSION}-linux-amd64/nats-server"
+          sudo install -m 0755 "${RUNNER_TEMP}/nats-server" /usr/local/bin/nats-server
+      - name: Start the JetStream test broker
+        run: |
+          set -euo pipefail
+          nohup nats-server -js -a 127.0.0.1 -p 4225 --store_dir "${RUNNER_TEMP}/nats-store" > "${RUNNER_TEMP}/nats.log" 2>&1 &
+          for _ in $(seq 1 50); do
+            if (exec 3<>/dev/tcp/127.0.0.1/4225) 2>/dev/null; then exit 0; fi
+            sleep 0.1
+          done
+          cat "${RUNNER_TEMP}/nats.log"
+          exit 1
       - run: cargo fetch --locked
       - run: cargo fmt --all -- --check
       - run: cargo clippy --workspace --all-targets --locked -- -D warnings

@@ -17,6 +17,7 @@ use ratatoskr_github_catalog::{
     legacy_cutover_readiness, legacy_shadow_account_ids, load_active_pat, register_pat,
     run_full_snapshot, run_star_list_snapshot,
 };
+use ratatoskr_github_catalog_service::bus::{Bus, BusError, BusSettings};
 use ratatoskr_github_catalog_service::{
     Lifecycle, OperatorCommand, OperatorCommandError, RepositoryApiState, admin_router,
     domain_router, parse_operator_command,
@@ -84,6 +85,9 @@ enum ProcessError {
     /// A service listener failed while serving.
     #[error("a service listener failed")]
     Serve(#[source] std::io::Error),
+    /// The fleet bus could not start or stopped before an orderly shutdown.
+    #[error("the fleet bus failed: {0}")]
+    Bus(#[from] BusError),
 }
 
 #[tokio::main]
@@ -227,21 +231,45 @@ async fn serve(config: Config) -> Result<(), ProcessError> {
         .map_err(ProcessError::Bind)?;
     let provider = ReqwestGithubApi::for_base_url(&config.provider.base_url)
         .map_err(ProcessError::Provider)?;
-    let repository_api = RepositoryApiState::new(
+    let mut repository_api = RepositoryApiState::new(
         database.clone(),
         provider,
         config.credentials.encryption_key().ok(),
     );
+    if let Some(secret) = config.internal.reader_service_secret() {
+        repository_api = repository_api.with_reader_service_secret(secret.clone());
+    }
+    let bus = connect_bus(&config).await?;
     lifecycle.mark_ready();
     serve_listeners(
         admin_listener,
         api_listener,
         repository_api,
+        bus,
         lifecycle,
         database,
         Duration::from_millis(config.limits.shutdown_timeout_ms),
     )
     .await
+}
+
+/// Connects the fleet bus when one is configured. A configured bus that cannot be reached, or
+/// whose durables are missing, refuses to start: the service never reports ready while it cannot
+/// relay or consume.
+async fn connect_bus(config: &Config) -> Result<Option<Bus>, ProcessError> {
+    let Some(url) = &config.bus.url else {
+        tracing::warn!("no fleet bus is configured; outbox rows are queued but not relayed");
+        return Ok(None);
+    };
+    let bus = Bus::connect(&BusSettings {
+        url: url.clone(),
+        nkey_seed_path: config
+            .bus
+            .nkey_seed_path()
+            .map(std::path::Path::to_path_buf),
+    })
+    .await?;
+    Ok(Some(bus))
 }
 
 async fn register_replacement_pat(config: &Config, account_id: &str) -> Result<(), ProcessError> {
@@ -305,39 +333,59 @@ async fn serve_listeners(
     admin_listener: tokio::net::TcpListener,
     api_listener: tokio::net::TcpListener,
     repository_api: RepositoryApiState,
+    bus: Option<Bus>,
     lifecycle: Lifecycle,
     database: Database,
     shutdown_timeout: Duration,
 ) -> Result<(), ProcessError> {
     let (shutdown_tx, shutdown_rx) = tokio::sync::watch::channel(false);
     let admin_shutdown = shutdown_rx.clone();
-    let api_shutdown = shutdown_rx;
+    let api_shutdown = shutdown_rx.clone();
     let admin_server = axum::serve(admin_listener, admin_router(lifecycle.clone()))
         .with_graceful_shutdown(wait_for_shutdown(admin_shutdown))
         .into_future();
     let api_server = axum::serve(api_listener, domain_router(repository_api))
         .with_graceful_shutdown(wait_for_shutdown(api_shutdown))
         .into_future();
+    let bus_task = supervise_bus(bus, database.clone(), lifecycle.clone(), shutdown_rx);
     tokio::pin!(admin_server);
     tokio::pin!(api_server);
+    tokio::pin!(bus_task);
     let outcome = tokio::select! {
         result = &mut admin_server => {
             let _ignored = shutdown_tx.send(true);
-            let peer = api_server.await;
-            result.and(peer)
+            let (peer, bus_result) = tokio::join!(&mut api_server, &mut bus_task);
+            result.map_err(ProcessError::Serve)
+                .and(peer.map_err(ProcessError::Serve))
+                .and(bus_result)
         }
         result = &mut api_server => {
             let _ignored = shutdown_tx.send(true);
-            let peer = admin_server.await;
-            result.and(peer)
+            let (peer, bus_result) = tokio::join!(&mut admin_server, &mut bus_task);
+            result.map_err(ProcessError::Serve)
+                .and(peer.map_err(ProcessError::Serve))
+                .and(bus_result)
+        }
+        bus_result = &mut bus_task => {
+            // The bus stopped before an orderly shutdown: readiness is already false, so drain
+            // the listeners and end the process with the bus error.
+            let _ignored = shutdown_tx.send(true);
+            let _drained = tokio::time::timeout(shutdown_timeout, async {
+                tokio::join!(&mut admin_server, &mut api_server)
+            })
+            .await;
+            bus_result
         }
         result = shutdown_signal() => {
             result.map_err(ProcessError::Serve)?;
             lifecycle.begin_drain();
             let _ignored = shutdown_tx.send(true);
             tokio::time::timeout(shutdown_timeout, async {
-                let (admin, api) = tokio::join!(&mut admin_server, &mut api_server);
-                admin.and(api)
+                let (admin, api, bus_result) =
+                    tokio::join!(&mut admin_server, &mut api_server, &mut bus_task);
+                admin.map_err(ProcessError::Serve)
+                    .and(api.map_err(ProcessError::Serve))
+                    .and(bus_result)
             })
             .await
             .map_err(|_| ProcessError::Serve(std::io::Error::other(
@@ -346,7 +394,25 @@ async fn serve_listeners(
         }
     };
     database.close().await;
-    outcome.map_err(ProcessError::Serve)
+    outcome
+}
+
+/// Runs the bus until shutdown; without a bus this never completes.
+async fn supervise_bus(
+    bus: Option<Bus>,
+    database: Database,
+    lifecycle: Lifecycle,
+    shutdown: tokio::sync::watch::Receiver<bool>,
+) -> Result<(), ProcessError> {
+    if let Some(bus) = bus {
+        bus.supervise(database, lifecycle, shutdown)
+            .await
+            .map_err(ProcessError::Bus)
+    } else {
+        let mut shutdown = shutdown;
+        let _stopped = shutdown.wait_for(|stopping| *stopping).await;
+        Ok(())
+    }
 }
 
 async fn wait_for_shutdown(mut receiver: tokio::sync::watch::Receiver<bool>) {

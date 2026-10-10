@@ -46,8 +46,8 @@ pub use commands::{
     SyncCommandError, handle_sync_command,
 };
 pub use config::{
-    AdminConfig, ApiConfig, Config, ConfigError, CredentialsConfig, GithubOAuthConfig,
-    LegacyConfig, Limits, OAuthAppCredentials, ProviderConfig, StorageConfig,
+    AdminConfig, ApiConfig, BusConfig, Config, ConfigError, CredentialsConfig, GithubOAuthConfig,
+    InternalConfig, LegacyConfig, Limits, OAuthAppCredentials, ProviderConfig, StorageConfig,
 };
 pub use credentials::{
     CredentialError, CredentialKey, VerifiedGithubAccount, load_active_oauth, load_active_pat,
