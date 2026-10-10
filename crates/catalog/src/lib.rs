@@ -9,6 +9,7 @@
 //! implementation plan items.
 
 mod account_erasure;
+mod account_erasure_state;
 mod backup_policy;
 mod commands;
 mod config;

@@ -77,6 +77,7 @@ async fn owned_schema_applies_twice_without_cross_schema_objects()
     assert_eq!(
         tables,
         [
+            "account_erasure_operations",
             "backup_policies",
             "backup_policy_feedback",
             "backup_policy_publication_cursor",

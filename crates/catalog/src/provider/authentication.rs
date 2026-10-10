@@ -50,12 +50,17 @@ impl ReqwestGithubApi {
             .send()
             .await
             .map_err(ProviderError::Transport)?;
-        if response.status() == reqwest::StatusCode::NO_CONTENT {
-            Ok(())
-        } else {
-            Err(ProviderError::UnexpectedStatus {
-                status: response.status().as_u16(),
-            })
+        match response.status() {
+            // GitHub's reference lists only 204 and 422 (validation failed, or the endpoint has
+            // been spammed) for this operation and documents no already-revoked status. A 404
+            // means the token has no grant, which is the state erasure wants, so a retry after a
+            // crash between this call and the commit converges. 422 stays an error: it also
+            // covers throttling and cannot be read as revoked. The 404 is undocumented provider
+            // behavior (XR-021 CONTRACTS.md S12).
+            reqwest::StatusCode::NO_CONTENT | reqwest::StatusCode::NOT_FOUND => Ok(()),
+            status => Err(ProviderError::UnexpectedStatus {
+                status: status.as_u16(),
+            }),
         }
     }
 

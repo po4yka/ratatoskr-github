@@ -15,6 +15,24 @@ use crate::{Database, PersistenceError};
 )]
 const POOL_ACQUIRE_TIMEOUT: Duration = Duration::from_secs(180);
 
+/// How account erasure classifies every table with a foreign key into `repositories`.
+#[derive(Debug, Clone, Copy)]
+pub struct ErasureTableClassification {
+    /// Tables whose rows keep a shared repository alive.
+    pub owner_references: &'static [&'static str],
+    /// Tables whose rows are collected together with their repository.
+    pub catalog_children: &'static [&'static str],
+}
+
+/// Returns the classification that decides which repositories erasure may collect.
+#[must_use]
+pub const fn erasure_table_classification() -> ErasureTableClassification {
+    ErasureTableClassification {
+        owner_references: crate::account_erasure_state::OWNER_REFERENCES,
+        catalog_children: crate::account_erasure_state::CATALOG_CHILDREN,
+    }
+}
+
 /// An isolated disposable catalog database.
 #[derive(Debug)]
 pub struct TestDatabase {

@@ -672,3 +672,12 @@ create table if not exists github_catalog.inbox_events (
     )),
     constraint inbox_payload_is_object check (jsonb_typeof(payload) = 'object')
 );
+
+-- Replay-safe record of every answered account erasure. The owner is kept only as a digest so the
+-- ledger holds no tenant identifier, and the row commits in the same transaction as the deletion.
+create table if not exists github_catalog.account_erasure_operations (
+    operation_id uuid primary key,
+    owner_digest text not null check (owner_digest ~ '^[0-9a-f]{64}$'),
+    outcome      text not null check (outcome in ('verified', 'incomplete_external_grant_revocation')),
+    completed_at timestamptz not null default now()
+);
