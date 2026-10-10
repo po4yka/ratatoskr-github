@@ -107,12 +107,13 @@ async fn observe_repository_end_to_end_via_wiremock() -> Result<(), Box<dyn std:
     assert_eq!(revisions, 1);
     let request_payload: serde_json::Value = sqlx::query_scalar(
         "select payload from github_catalog.outbox_events
-         where subject = 'knowledge.repository_analysis.requested.v1'",
+         where subject = 'evt.knowledge.repository_analysis.requested.v1'",
     )
     .fetch_one(database.database.pool())
     .await?;
     let request: ratatoskr_github_contracts::RepositoryAnalysisRequested =
-        serde_json::from_value(request_payload.clone())?;
+        ratatoskr_event_envelope::EventEnvelope::from_json(request_payload.to_string().as_bytes())?
+            .payload_as()?;
     assert_eq!(request.repository_id.to_string(), repository_id.to_string());
     assert!(
         request_payload.to_string().contains("content_ref"),
@@ -155,7 +156,7 @@ async fn observe_repository_end_to_end_via_wiremock() -> Result<(), Box<dyn std:
     assert_eq!(revisions_after, 1);
     let requests_after_redelivery: i64 = sqlx::query_scalar(
         "select count(*) from github_catalog.outbox_events
-         where subject = 'knowledge.repository_analysis.requested.v1'",
+         where subject = 'evt.knowledge.repository_analysis.requested.v1'",
     )
     .fetch_one(database.database.pool())
     .await?;

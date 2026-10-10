@@ -621,23 +621,38 @@ create table if not exists github_catalog.repository_action_attempts (
     )
 );
 
+-- Every row stores the COMPLETE canonical envelope (`EventEnvelope` or `CommandEnvelope`) under a
+-- class-prefixed subject, and `message_id` is the envelope's `event_id` / `command_id`, which the
+-- relay sends as the `Nats-Msg-Id`. `published_at` is set only after the broker acknowledges the
+-- publish; a failed publish records the attempt, a closed error class and a backoff deadline.
 create table if not exists github_catalog.outbox_events (
-    message_id   uuid primary key,
-    subject      text not null,
-    payload      jsonb not null,
-    created_at   timestamptz not null default now(),
-    published_at timestamptz,
+    message_id      uuid primary key,
+    subject         text not null,
+    payload         jsonb not null,
+    created_at      timestamptz not null default now(),
+    published_at    timestamptz,
+    attempt_count   integer not null default 0,
+    next_attempt_at timestamptz not null default now(),
+    last_error      text,
     constraint outbox_subject_is_known check (subject in (
         'github.sync.requested.v1',
         'github.repository.observed.v1',
         'github.star.observed.v1',
         'github.star.removed.v1',
         'github.backup_policy.changed.v1',
-        'cmd.vault.target.desired.v1',
-        'knowledge.repository_analysis.requested.v1'
+        'evt.knowledge.repository_analysis.requested.v1',
+        'cmd.vault.backup_policy.apply_requested.v1'
     )),
-    constraint outbox_payload_is_object check (jsonb_typeof(payload) = 'object')
+    constraint outbox_payload_is_object check (jsonb_typeof(payload) = 'object'),
+    constraint outbox_attempt_count_check check (attempt_count >= 0),
+    constraint outbox_last_error_check check (last_error is null or last_error in (
+        'publish_failed', 'ack_failed', 'ack_timeout'
+    ))
 );
+
+create index if not exists outbox_events_unpublished_idx
+    on github_catalog.outbox_events (created_at, message_id)
+    where published_at is null;
 
 create table if not exists github_catalog.inbox_events (
     message_id  uuid primary key,
@@ -652,9 +667,8 @@ create table if not exists github_catalog.inbox_events (
         'github.star.removed.v1',
         'github.backup_policy.changed.v1',
         'evt.vault.backup_policy.acknowledged.v1',
-        'knowledge.repository_analysis.requested.v1',
-        'knowledge.repository_analysis.completed.v1',
-        'knowledge.repository_analysis.failed.v1'
+        'evt.knowledge.repository_analysis.completed.v1',
+        'evt.knowledge.repository_analysis.failed.v1'
     )),
     constraint inbox_payload_is_object check (jsonb_typeof(payload) = 'object')
 );

@@ -15,12 +15,14 @@ use time::{Duration, OffsetDateTime};
 use uuid::Uuid;
 
 use crate::database::{Database, PersistenceError};
+use crate::envelopes::{
+    ANALYSIS_REQUESTED_SUBJECT, EnvelopeBuildError, analysis_requested_envelope,
+};
 use crate::provider::ProviderRepositoryBody;
 
 const REQUESTED_CONTRACT: &str = "repository_analysis";
-const REQUESTED_SUBJECT: &str = "knowledge.repository_analysis.requested.v1";
-const COMPLETED_SUBJECT: &str = "knowledge.repository_analysis.completed.v1";
-const FAILED_SUBJECT: &str = "knowledge.repository_analysis.failed.v1";
+const COMPLETED_SUBJECT: &str = "evt.knowledge.repository_analysis.completed.v1";
+const FAILED_SUBJECT: &str = "evt.knowledge.repository_analysis.failed.v1";
 const DISPATCH_SPACING: Duration = Duration::seconds(1);
 
 /// Visible lifecycle state for a repository-analysis request.
@@ -106,6 +108,15 @@ pub enum WatchError {
     /// Catalog-owned persistence failed.
     #[error(transparent)]
     Persistence(#[from] PersistenceError),
+}
+
+impl From<EnvelopeBuildError> for WatchError {
+    fn from(error: EnvelopeBuildError) -> Self {
+        match error {
+            EnvelopeBuildError::Identity => Self::InvalidStoredIdentity,
+            EnvelopeBuildError::Encode(source) => Self::Serialization(source),
+        }
+    }
 }
 
 /// Registers or re-enables one user-owned metadata-delta analysis watch.
@@ -352,13 +363,16 @@ pub async fn dispatch_due_repository_analysis(
         return Ok(AnalysisDispatch::NotDue);
     };
     let outbox_message_id = Uuid::now_v7();
+    let requested: RepositoryAnalysisRequested =
+        serde_json::from_value(payload).map_err(WatchError::Serialization)?;
+    let envelope = analysis_requested_envelope(outbox_message_id, &requested)?;
     sqlx::query(
         "insert into github_catalog.outbox_events (message_id, subject, payload)
          values ($1, $2, $3)",
     )
     .bind(outbox_message_id)
-    .bind(REQUESTED_SUBJECT)
-    .bind(payload)
+    .bind(ANALYSIS_REQUESTED_SUBJECT)
+    .bind(envelope)
     .execute(&mut *tx)
     .await
     .map_err(PersistenceError::Query)?;

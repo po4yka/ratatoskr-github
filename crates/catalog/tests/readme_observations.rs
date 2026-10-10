@@ -101,12 +101,13 @@ async fn source_revision_creates_one_contract_valid_analysis_outbox_command()
         AppliedOutcome::Unchanged
     );
     let payload: serde_json::Value = sqlx::query_scalar(
-        "select payload from github_catalog.outbox_events where subject = 'knowledge.repository_analysis.requested.v1'",
+        "select payload from github_catalog.outbox_events where subject = 'evt.knowledge.repository_analysis.requested.v1'",
     )
     .fetch_one(database.database.pool())
     .await?;
     let request: ratatoskr_github_contracts::RepositoryAnalysisRequested =
-        serde_json::from_value(payload)?;
+        ratatoskr_event_envelope::EventEnvelope::from_json(payload.to_string().as_bytes())?
+            .payload_as()?;
     assert_eq!(
         request.repository_id.to_string(),
         repository.repository_id.to_string()

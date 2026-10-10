@@ -65,7 +65,7 @@ async fn published_policy_versions_advance_only_when_derived_state_changes() {
             .expect("first"),
         PublicationOutcome::Published { policy_version: 1 }
     );
-    let exclusions: serde_json::Value = sqlx::query_scalar("select payload->'repositories'->0->'exclusions' from github_catalog.outbox_events where subject = 'cmd.vault.target.desired.v1'")
+    let exclusions: serde_json::Value = sqlx::query_scalar("select payload->'payload'->'policy'->'repositories'->0->'exclusions' from github_catalog.outbox_events where subject = 'cmd.vault.backup_policy.apply_requested.v1'")
         .fetch_one(fixture.database.pool()).await.expect("published exclusions");
     assert_eq!(exclusions[0]["expression"], "refs/heads/scratch/*");
     assert_eq!(
@@ -87,7 +87,7 @@ async fn published_policy_versions_advance_only_when_derived_state_changes() {
             .expect("second"),
         PublicationOutcome::Published { policy_version: 2 }
     );
-    let count: i64 = sqlx::query_scalar("select count(*) from github_catalog.outbox_events where subject = 'cmd.vault.target.desired.v1'").fetch_one(fixture.database.pool()).await.expect("count");
+    let count: i64 = sqlx::query_scalar("select count(*) from github_catalog.outbox_events where subject = 'cmd.vault.backup_policy.apply_requested.v1'").fetch_one(fixture.database.pool()).await.expect("count");
     assert_eq!(count, 2);
     fixture.cleanup().await.expect("cleanup");
 }

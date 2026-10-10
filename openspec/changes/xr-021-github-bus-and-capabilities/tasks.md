@@ -9,8 +9,8 @@
 
 ## 3. Outbox stores complete envelopes (S09)
 
-- [ ] 3.1 RED: add `dispatched_analysis_request_is_a_complete_event_envelope` and `published_policy_is_a_vault_apply_command_envelope`; they fail on the bare payload and unprefixed subject.
-- [ ] 3.2 GREEN: build the envelopes, edit the outbox and inbox subject CHECKs in `schema.sql`, add the relay columns, and use the `evt.` spellings for the inbox subjects.
+- [x] 3.1 RED: add `dispatched_analysis_request_is_a_complete_event_envelope` and `published_policy_is_a_vault_apply_command_envelope`; they fail on the bare payload and unprefixed subject.
+- [x] 3.2 GREEN: build the envelopes, edit the outbox and inbox subject CHECKs in `schema.sql`, add the relay columns, and use the `evt.` spellings for the inbox subjects.
 
 ## 4. Bus relay, consumers and dispatch loops (S02, S04)
 

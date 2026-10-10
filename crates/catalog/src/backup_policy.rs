@@ -1,6 +1,9 @@
 //! Derivation, durable publication, and acknowledgment projection for Vault policy intent.
 
 use crate::database::{Database, PersistenceError};
+use crate::envelopes::{
+    BACKUP_POLICY_APPLY_SUBJECT, EnvelopeBuildError, backup_policy_apply_envelope,
+};
 use ratatoskr_backup_contracts::{
     BackupExclusion, BackupExclusionScope, BackupPriorityHint, DesiredBackupPolicy,
     ExclusionExpression, MirrorCadence, PolicyAcknowledged, PolicyOutcome, RepositoryBackupEntry,
@@ -12,7 +15,6 @@ use uuid::Uuid;
 
 /// The trailing delay used to coalesce catalog changes into one publication.
 pub const POLICY_DEBOUNCE: Duration = Duration::seconds(60);
-const DESIRED_SUBJECT: &str = "cmd.vault.target.desired.v1";
 const ACKNOWLEDGED_SUBJECT: &str = "evt.vault.backup_policy.acknowledged.v1";
 
 /// One catalog entry considered while deriving the mirror policy.
@@ -76,6 +78,14 @@ pub enum BackupPolicyError {
     /// A typed policy could not be serialized for the outbox.
     #[error("backup policy could not be serialized")]
     Serialization(#[source] serde_json::Error),
+}
+impl From<EnvelopeBuildError> for BackupPolicyError {
+    fn from(error: EnvelopeBuildError) -> Self {
+        match error {
+            EnvelopeBuildError::Identity => invalid("envelope"),
+            EnvelopeBuildError::Encode(source) => Self::Serialization(source),
+        }
+    }
 }
 /// Outcome of one due-publication attempt.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -190,14 +200,16 @@ pub async fn publish_due_backup_policy(
     }
     let version = u64::try_from(cursor.2).map_err(|_| invalid("policy_version"))? + 1;
     let policy = derive_backup_policy(version, &inputs)?;
-    let payload = serde_json::to_value(&policy).map_err(BackupPolicyError::Serialization)?;
-    sqlx::query("insert into github_catalog.backup_policy_publications (policy_version, fingerprint, document) values ($1,$2,$3)").bind(i64::try_from(version).map_err(|_|invalid("policy_version"))?).bind(&fingerprint).bind(&payload).execute(&mut *tx).await.map_err(PersistenceError::Query)?;
+    let document = serde_json::to_value(&policy).map_err(BackupPolicyError::Serialization)?;
+    sqlx::query("insert into github_catalog.backup_policy_publications (policy_version, fingerprint, document) values ($1,$2,$3)").bind(i64::try_from(version).map_err(|_|invalid("policy_version"))?).bind(&fingerprint).bind(&document).execute(&mut *tx).await.map_err(PersistenceError::Query)?;
+    let command_id = Uuid::now_v7();
+    let envelope = backup_policy_apply_envelope(command_id, policy)?;
     sqlx::query(
         "insert into github_catalog.outbox_events (message_id, subject, payload) values ($1,$2,$3)",
     )
-    .bind(Uuid::now_v7())
-    .bind(DESIRED_SUBJECT)
-    .bind(payload)
+    .bind(command_id)
+    .bind(BACKUP_POLICY_APPLY_SUBJECT)
+    .bind(envelope)
     .execute(&mut *tx)
     .await
     .map_err(PersistenceError::Query)?;

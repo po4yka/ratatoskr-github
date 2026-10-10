@@ -19,6 +19,9 @@ use ratatoskr_identifiers::{
 };
 
 use crate::database::{Database, PersistenceError};
+use crate::envelopes::{
+    ANALYSIS_REQUESTED_SUBJECT, EnvelopeBuildError, analysis_requested_envelope,
+};
 use crate::provider::ProviderRepositoryBody;
 
 /// How many most recent revisions stay retained per repository.
@@ -64,6 +67,15 @@ pub enum RepositoryAnalysisPublicationError {
     /// The numeric GitHub repository identity cannot be represented by the contract.
     #[error("the GitHub repository identity is outside the published contract range")]
     NumericIdentity,
+}
+
+impl From<EnvelopeBuildError> for RepositoryAnalysisPublicationError {
+    fn from(error: EnvelopeBuildError) -> Self {
+        match error {
+            EnvelopeBuildError::Identity => Self::Contract,
+            EnvelopeBuildError::Encode(source) => Self::Encode(source),
+        }
+    }
 }
 
 /// Failure while preserving bounded README bytes into the Catalog-owned blob boundary.
@@ -335,12 +347,14 @@ pub async fn apply_fresh_source(
             )),
         ));
     }
+    let envelope = analysis_requested_envelope(message_id, &request)?;
     sqlx::query(
         "insert into github_catalog.outbox_events (message_id, subject, payload)
-         values ($1, 'knowledge.repository_analysis.requested.v1', $2)",
+         values ($1, $2, $3)",
     )
     .bind(message_id)
-    .bind(payload)
+    .bind(ANALYSIS_REQUESTED_SUBJECT)
+    .bind(envelope)
     .execute(&mut *transaction)
     .await
     .map_err(PersistenceError::Query)?;

@@ -14,6 +14,7 @@ mod commands;
 mod config;
 mod credentials;
 mod database;
+mod envelopes;
 mod identity;
 mod incremental;
 mod legacy;
