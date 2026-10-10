@@ -770,3 +770,65 @@ fn star_action_request(idempotency_key: &str) -> serde_json::Value {
     }
     request
 }
+
+async fn domain_status(
+    method: &str,
+    route: &str,
+    body: Option<serde_json::Value>,
+) -> Result<(u16, serde_json::Value), Box<dyn std::error::Error>> {
+    use http_body_util::BodyExt as _;
+    use tower::ServiceExt as _;
+
+    let database = ratatoskr_github_catalog::test_support::TestDatabase::create().await?;
+    let provider =
+        ratatoskr_github_catalog::provider::ReqwestGithubApi::for_base_url("http://127.0.0.1:9")?;
+    let router = ratatoskr_github_catalog_service::domain_router(
+        ratatoskr_github_catalog_service::RepositoryApiState::new(
+            database.database.clone(),
+            provider,
+            None,
+        ),
+    );
+    let request = axum::http::Request::builder()
+        .method(method)
+        .uri(route)
+        .header("content-type", "application/json")
+        .body(axum::body::Body::from(
+            body.map(|value| value.to_string()).unwrap_or_default(),
+        ))?;
+    let response = router.oneshot(request).await?;
+    let status = response.status().as_u16();
+    let bytes = response.into_body().collect().await?.to_bytes();
+    let document = serde_json::from_slice(&bytes).unwrap_or(serde_json::Value::Null);
+    database.cleanup().await?;
+    Ok((status, document))
+}
+
+#[tokio::test]
+async fn capabilities_are_served_without_the_user_claim() -> Result<(), Box<dyn std::error::Error>>
+{
+    let (status, document) = domain_status("GET", "/v1/capabilities", None).await?;
+
+    assert_eq!(status, 200, "capabilities: {document}");
+    assert_eq!(
+        document,
+        serde_json::json!({
+            "repository_preview": true,
+            "repository_actions": ["metadata", "track", "star"]
+        })
+    );
+    Ok(())
+}
+
+#[tokio::test]
+async fn preview_still_requires_the_user_claim() -> Result<(), Box<dyn std::error::Error>> {
+    let (status, _document) = domain_status(
+        "POST",
+        "/v1/gh/repositories/preview",
+        Some(serde_json::json!({"repository_url": "https://github.com/owner/repository"})),
+    )
+    .await?;
+
+    assert_eq!(status, 401);
+    Ok(())
+}

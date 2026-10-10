@@ -29,10 +29,11 @@ use ratatoskr_github_contracts::{
     RepositoryPreviewTarget, RepositoryProviderStarOutcome,
 };
 use ratatoskr_identifiers::SafeMessage;
-use secrecy::ExposeSecret as _;
+use secrecy::{ExposeSecret as _, SecretString};
 use serde::Serialize;
 use uuid::Uuid;
 
+use crate::readme_blobs;
 use crate::repository_action_attempts::{ActionClaim, claim_action, complete_action};
 
 const USER_HEADER: &str = "x-ratatoskr-user-id";
@@ -45,6 +46,7 @@ pub struct RepositoryApiState {
     provider: ReqwestGithubApi,
     ledger: Arc<RateLimitLedger>,
     credential_key: Option<CredentialKey>,
+    reader_service_secret: Option<SecretString>,
 }
 
 impl RepositoryApiState {
@@ -60,17 +62,36 @@ impl RepositoryApiState {
             provider,
             ledger: Arc::new(RateLimitLedger::new()),
             credential_key,
+            reader_service_secret: None,
         }
+    }
+
+    /// Mounts the internal README byte route behind this shared bearer secret.
+    ///
+    /// Without a secret the route is not mounted at all (XR-021 CONTRACTS.md S09).
+    #[must_use]
+    pub fn with_reader_service_secret(mut self, secret: SecretString) -> Self {
+        self.reader_service_secret = Some(secret);
+        self
     }
 }
 
 /// Builds the separately bound host-local domain router.
 pub fn domain_router(state: RepositoryApiState) -> Router {
-    Router::new()
+    let readme_blobs = state
+        .reader_service_secret
+        .clone()
+        .map(|secret| readme_blobs::router(state.database.clone(), secret));
+    let router = Router::new()
         .route("/v1/capabilities", get(capabilities))
         .route("/v1/gh/repositories/preview", post(preview))
         .route("/v1/gh/repositories/actions", post(action))
-        .with_state(state)
+        .with_state(state);
+    let router = match readme_blobs {
+        Some(readme_blobs) => router.merge(readme_blobs),
+        None => router,
+    };
+    router
         .layer(DefaultBodyLimit::max(MAX_REQUEST_BYTES))
         .layer(middleware::from_fn(no_store))
 }
@@ -81,16 +102,19 @@ struct Capabilities {
     repository_actions: [RepositoryActionCapability; 3],
 }
 
-async fn capabilities(headers: HeaderMap) -> Result<Json<Capabilities>, ApiFault> {
-    let _user_id = authenticated_user(&headers)?;
-    Ok(Json(Capabilities {
+/// The capability probe is the single loopback route exempt from the minted-claims requirement:
+/// Edge probes it anonymously and it carries no tenant data (Platform ADR-0015 as amended by
+/// XR-021 CONTRACTS.md S06 D2). It takes no header extractor on purpose. The document is read key
+/// for key by the browser extension, so its shape never changes.
+async fn capabilities() -> Json<Capabilities> {
+    Json(Capabilities {
         repository_preview: true,
         repository_actions: [
             RepositoryActionCapability::Metadata,
             RepositoryActionCapability::Track,
             RepositoryActionCapability::Star,
         ],
-    }))
+    })
 }
 
 async fn preview(

@@ -12,6 +12,7 @@ use axum::middleware::{self, Next};
 use axum::response::Response;
 use axum::routing::get;
 
+mod readme_blobs;
 mod repository_action_attempts;
 mod repository_api;
 

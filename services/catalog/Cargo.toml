@@ -22,6 +22,8 @@ ratatoskr-github-catalog = { path = "../../crates/catalog" }
 ratatoskr-github-contracts.workspace = true
 ratatoskr-identifiers.workspace = true
 secrecy.workspace = true
+sha2.workspace = true
+subtle.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 sqlx.workspace = true
