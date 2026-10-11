@@ -10,4 +10,4 @@
 
 ## 3. Documentation from the code (R3-19)
 
-- [ ] 3.1 Rewrite the `README.md` status paragraph and the no-pin sentences from `services/catalog/src` and the workspace; this task has no failing test because it is documentation.
+- [x] 3.1 Rewrite the `README.md` status paragraph and the no-pin sentences from `services/catalog/src` and the workspace; this task has no failing test because it is documentation.

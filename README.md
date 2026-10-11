@@ -421,23 +421,14 @@ would emit them.
 
 ## Implementation plan
 
-The authoritative sequence is [`docs/IMPLEMENTATION_PLAN.md`](docs/IMPLEMENTATION_PLAN.md). Items 1
-and 3 (service foundation; repository identity and metadata), item 4 (full star snapshots with
-atomic authority, checkpoints, and evidenced unstars), item 5 (watermark-governed incremental
-scans with gap-forced rescans, recorded drift repairs, and platform-scheduler command consumption),
-item 6 (native star-list snapshots over GraphQL with atomic list authority, evidenced
-membership observations, tombstones, and truncation refusal), and item 7 (repository modes with
-validated audited transitions, plus consent-carrying idempotent star/list mutations under an
-authorization context with truthful partial-success reporting) are implemented. Items 2 and 8
-through 10 remain planned.
+The authoritative sequence is [`docs/IMPLEMENTATION_PLAN.md`](docs/IMPLEMENTATION_PLAN.md). Items 1 and 3 (service foundation; repository identity and metadata), item 4 (full star snapshots with atomic authority, checkpoints, and evidenced unstars), item 5 (watermark-governed incremental scans with gap-forced rescans, recorded drift repairs, and consumption of the platform-scheduler sync command by the library), item 6 (native star-list snapshots over GraphQL with atomic list authority, evidenced membership observations, tombstones, and truncation refusal), item 7 (repository modes with validated audited transitions, plus consent-carrying idempotent star/list mutations under an authorization context with truthful partial-success reporting), item 8 (desired backup policy publication to Vault) and item 9 (metadata-delta watches and analysis requests) are implemented. Item 2 is partly implemented: replacement PATs and OAuth tokens are stored encrypted with recorded scopes, and OAuth grant revocation runs during account erasure, but the OAuth PKCE authorization flow is planned. Item 10 has the `import-legacy`, `shadow-legacy` and `cutover-readiness` operator commands; the cutover itself is an operator decision that has not been taken.
 
 ## Workspace integration
 
-The planned `ratatoskr-workspace` topology will pin Catalog with compatible contracts, Vault,
-Knowledge, Telegram, Platform, and client commits. No workspace pin or GitHub-to-Vault integration
-profile exists yet. Cross-repository changes are coordinated through changesets; this repository
-remains independently buildable and testable.
+The `ratatoskr-workspace` repository pins this repository as the `repos/github` submodule together with compatible Contracts, Platform, Knowledge, Vault and the other service commits, and its harness checks the pinned snapshot: port allocation (this service binds 8092 for the domain listener and 9095 for the operator listener), the Edge upstream list, the single reviewed NATS ACL against this repository's `deploy/nats/identity.conf`, and the fixed JetStream durables this service verifies. Those checks read manifests and configuration; they do not start this service. Cross-service evidence, an end-to-end run of the GitHub flow against Edge, Knowledge and Vault on a real broker and database, comes from the workspace's native smoke and has not run yet, so nothing here claims it. Cross-repository changes are coordinated through changesets; this repository remains independently buildable and testable.
 
 ## Project status
 
-The process foundation (configuration, telemetry, operator health, owned schema), repository identity with metadata, full snapshots, incremental scans with scheduled reconciliation via consumed sync commands, native star-list snapshots chained independently onto every commanded sync, repository modes with audited validated transitions, and authorized idempotent star/list mutations with truthful partial-success outcomes are implemented and gated by CI. Account connections (credential storage), public APIs, watches, and event publication do not exist yet; those sections above describe the intended GitHub Catalog architecture. Mutation authorization reads granted scopes recorded on the account; credential flows populate them in item 2.
+Implemented and gated by CI: the process foundation (strict configuration, telemetry, operator health routes, one owned schema); repository identity and metadata; full snapshots, incremental scans and native star-list snapshots; repository modes with audited transitions; authorized idempotent star and list mutations with partial-success outcomes; encrypted PAT and OAuth credential storage with the `reconnect-pat` operator command; the Edge-authenticated domain API (`/v1/capabilities`, repository preview and the confirmed `metadata`/`track`/`star` actions with durable replay); the bearer-authorized internal route that serves stored README bytes to Knowledge; watches, where a `track` action registers a metadata-delta watch and a periodic observer re-evaluates watched repositories; desired backup policy publication to Vault; time-bounded provider calls; and the fleet bus, where an outbox relay publishes `evt.knowledge.repository_analysis.requested.v1` and `cmd.vault.backup_policy.apply_requested.v1` and three supervised consumers read the Knowledge and Vault results under this service's own NATS identity and inbox prefix. Account erasure, including OAuth grant revocation, is implemented as a library operation with tests.
+
+Not implemented: live consumption of `cmd.github.sync.requested.v1` over the bus (the library handles the command, and no bus consumer delivers it), the NATS transport of account erasure, the OAuth PKCE authorization flow, and an internet-facing API. Sections above that describe those parts are planned architecture, not behavior.
