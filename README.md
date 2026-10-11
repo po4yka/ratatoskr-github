@@ -2,7 +2,7 @@
 
 `ratatoskr-github` is the GitHub Catalog bounded context for Ratatoskr. It records what repositories a user has starred or chosen to track, preserves GitHub metadata and list membership, coordinates repository analysis, and publishes the desired backup state consumed by Git Vault.
 
-> **Status:** a Rust service runs locally with strict configuration, structured process telemetry, operator health routes (`/live`, `/ready`, `/metrics`, `/version`), stable repository identity and star/list synchronization, encrypted replacement-PAT storage, audited repository modes and provider mutations, and desired-backup-policy publication. A separate loopback domain listener serves Edge-authenticated repository preview and confirmed `metadata`/`track`/`star` actions with durable replay and component-level partial results. The service takes part in the fleet bus: an outbox relay, three supervised result consumers and the dispatch loops run under its own narrow NATS identity, and a bearer-authorized byte route serves stored README bytes to Knowledge. An internet-facing API remains planned.
+> **Status:** a Rust service runs locally with strict configuration, structured process telemetry, operator health routes (`/live`, `/ready`, `/metrics`, `/version`), stable repository identity and star/list synchronization, encrypted replacement-PAT storage, audited repository modes and provider mutations, and desired-backup-policy publication. A separate loopback domain listener serves Edge-authenticated repository preview and confirmed `metadata`/`track`/`star` actions with durable replay and component-level partial results. The service takes part in the fleet bus: an outbox relay, three supervised result consumers and the dispatch loops run under its own narrow NATS identity, and a bearer-authorized byte route serves stored README bytes to Knowledge. A `track` action registers a metadata-delta watch, a periodic observer re-evaluates watched repositories, and the resulting repository-analysis requests reach Knowledge. Every provider call is time-bounded. An internet-facing API remains planned.
 
 > [!IMPORTANT]
 > **Ratatoskr is in development.** No database holds data that has to survive a schema change.
@@ -253,7 +253,7 @@ Catalog never inspects Vault's filesystem or writes its database. Vault reports 
 
 Repository analysis belongs to `ratatoskr-knowledge`.
 
-When metadata or README content changes, Catalog publishes the event:
+A request originates only from a user-owned metadata-delta watch. A `track` action registers a watch for the acting user with an unevaluated baseline, so tracking a repository queues its first analysis request; `metadata` and `star` register no watch. Whenever a fresh repository body is recorded, by an action or by the periodic observer, Catalog fetches the README, stores its bytes under their SHA-256 digest and evaluates every enabled watch: a changed repository (its attributes or its README) queues one request per watch owner, an unchanged one queues none. The request carries a `BlobRef` to the stored README, or the real reason it is absent (`not_found`, `not_authorized`). The dispatcher then writes the event:
 
 ```text
 evt.knowledge.repository_analysis.requested.v1
@@ -267,6 +267,8 @@ Changes to star lists or backup policy do not by themselves change repository co
 
 ## Fleet bus
 
+A deployable example of every setting this service needs is `deploy/systemd/github.conf.example`; a test loads it through the service's own configuration loader.
+
 The process connects to the fleet NATS broker when `RATATOSKR__BUS__URL` is set. Without it the service still serves its API and queues outbox rows, but nothing relays them.
 
 ```text
@@ -276,7 +278,7 @@ RATATOSKR__BUS__NKEY_SEED_PATH=/etc/ratatoskr/github.nkey
 
 The seed is read from the absolute path at runtime and never logged. A non-loopback broker must use `tls://` and an identity. The identity's permissions are the GITHUB stanza in `deploy/nats/identity.conf`, a byte-equal copy of the stanza in the single reviewed ACL held by `ratatoskr-platform`.
 
-Edge provisions the three durables this service consumes on `ratatoskr_events`, and the service verifies them at startup and never creates one: `ratatoskr_github_analysis_completed` (`evt.knowledge.repository_analysis.completed.v1`), `ratatoskr_github_analysis_failed` (`evt.knowledge.repository_analysis.failed.v1`) and `ratatoskr_github_policy_acknowledged` (`evt.vault.backup_policy.acknowledged.v1`), each explicit-ack with a 30 s ack wait. It publishes `evt.knowledge.repository_analysis.requested.v1` and `cmd.vault.backup_policy.apply_requested.v1`. When the relay, a consumer or the broker connection stops before an orderly shutdown, readiness goes false and the process exits non-zero. A publish that times out is indistinguishable from a denied one: check the NATS server log for a `Publish Violation`.
+Edge provisions the three durables this service consumes on `ratatoskr_events`, and the service verifies them at startup and never creates one: `ratatoskr_github_analysis_completed` (`evt.knowledge.repository_analysis.completed.v1`), `ratatoskr_github_analysis_failed` (`evt.knowledge.repository_analysis.failed.v1`) and `ratatoskr_github_policy_acknowledged` (`evt.vault.backup_policy.acknowledged.v1`), each explicit-ack with a 30 s ack wait. It publishes `evt.knowledge.repository_analysis.requested.v1` and `cmd.vault.backup_policy.apply_requested.v1`. When the relay, a consumer or the broker connection stops before an orderly shutdown, readiness goes false and the process exits non-zero. A relay that keeps running but cannot publish also turns readiness off: when a pass attempted a publish, one failed, and the oldest unpublished row has three failed attempts or is older than 300 seconds, `/ready` answers 503 with `{"failing":["bus_publish"]}` until a pass leaves nothing stuck; the relay itself never stops. An envelope larger than the broker's `max_payload` minus 1 KiB can never be published, so its outbox row is marked `undeliverable_at` with `payload_too_large` and never counts against readiness. A publish that times out is indistinguishable from a denied one: check the NATS server log for a `Publish Violation`.
 
 Knowledge reads README bytes over the loopback domain listener:
 
@@ -289,16 +291,19 @@ It answers 200 with the stored bytes and `X-Content-SHA256`, 401 without the sec
 
 ## Repository watches
 
-A watch policy may monitor:
+The implemented watch is the metadata-delta analysis watch: one per user and repository, registered by a `track` action. It is registered with one of two baselines. `Current` stores the repository's present metadata revision as its checkpoint, so registration never analyses old state; `Unevaluated` stores none, so the first evaluation queues an analysis request (this is what `track` uses). Later changes of the repository's attributes or README queue a deduplicated request.
 
-- README content hash;
+A periodic observer keeps watches current. Every `RATATOSKR__WATCH__OBSERVE_INTERVAL_SECONDS` (default 3600, `0` disables it, at most 604800) it observes at most `RATATOSKR__WATCH__BATCH` (default 10, 1 to 100) repositories that have an enabled watch, least recently observed first, with unauthenticated provider access and its own rate-limit budget; a withheld budget ends the pass. The observer runs only while a fleet bus is configured, supervised beside the relay.
+
+A watch policy may later also monitor, and these remain planned:
+
 - new releases;
 - newly opened issues;
 - repository archival or deletion;
 - default-branch or visibility changes;
 - selected activity thresholds.
 
-The first observation establishes a baseline without notifying. Later monotonic or hash changes emit deduplicated events. Watch synchronization remains bounded by account rate limits and per-repository policy.
+Watch synchronization stays bounded by account rate limits.
 
 ## Credentials and authorization
 
@@ -338,6 +343,8 @@ acknowledgement truthfully reports incomplete external grant revocation.
 GitHub's reference documents only 204 and 422 for the grant deletion. The revocation counts as verified on a 204, or on a 404 only when `GET /user` with the same access token then answers 401 (the token is dead, so the grant is gone); a 404 followed by any other probe answer or a probe failure, a 422 and every other status are incomplete.
 
 Telegram, Platform, Knowledge, and Vault never receive the plaintext GitHub token.
+
+Every call to GitHub is bounded by a 5 second connect timeout and a whole-exchange timeout, `RATATOSKR__PROVIDER__TIMEOUT_MS` (default 30000, 1000 to 120000). A call that exceeds its bound fails as a transport error, so a stalled provider cannot hang previews, actions or account erasure.
 
 ## Commands and events
 
@@ -387,10 +394,12 @@ Internal provider details are not exposed as stable public contracts.
 
 ## Observability
 
-The implemented foundation exports only:
+The operator listener exports:
 
 ```text
 github_catalog_process_info
+github_catalog_outbox_publications_total{outcome="published|failed"}
+github_catalog_outbox_undeliverable_total{class="payload_too_large"}
 ```
 
 Sync, snapshot, rate-limit, mutation, and analysis metrics remain planned with the behavior that

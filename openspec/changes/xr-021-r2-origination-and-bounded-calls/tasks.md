@@ -25,9 +25,9 @@
 
 ## 6. Documentation and operator example (R2-10)
 
-- [ ] 6.1 RED: add `services/catalog/tests/deployment_profile.rs::the_shipped_example_loads_and_enables_the_bus_and_the_reader_route`; it fails because the example is absent.
-- [ ] 6.2 GREEN: ship `deploy/systemd/github.conf.example` and rewrite README, DEVELOPMENT.md and AGENTS.md where they say watches or event publication do not exist.
+- [x] 6.1 RED: add `services/catalog/tests/deployment_profile.rs::the_shipped_example_loads_and_enables_the_bus_and_the_reader_route`; it fails because the example is absent.
+- [x] 6.2 GREEN: ship `deploy/systemd/github.conf.example` and rewrite README, DEVELOPMENT.md and AGENTS.md where they say watches or event publication do not exist.
 
 ## 7. Final gate
 
-- [ ] 7.1 Run the full local gate and `openspec validate --all --strict`.
+- [x] 7.1 Run the full local gate and `openspec validate --all --strict`.

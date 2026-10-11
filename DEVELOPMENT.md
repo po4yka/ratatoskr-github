@@ -3,7 +3,7 @@
 > Status: Active  
 > Last reviewed: 2026-08-23
 
-The service foundation and repository domain API are implemented. The real process binds loopback operator and Edge-authenticated domain listeners, stores replacement PATs encrypted, serves read-only repository previews, and executes confirmed `metadata`/`track`/`star` actions with durable exact replay and truthful component outcomes. Snapshot, list, mode, mutation, watch, analysis-request, and desired-policy behavior remains as documented in the repository specs. The fleet bus relay and result consumers run when a broker is configured; live consumption of the sync command is not implemented.
+The service foundation and repository domain API are implemented. The real process binds loopback operator and Edge-authenticated domain listeners, stores replacement PATs encrypted, serves read-only repository previews, and executes confirmed `metadata`/`track`/`star` actions with durable exact replay and truthful component outcomes. Snapshot, list, mode, mutation, watch, analysis-request, and desired-policy behavior remains as documented in the repository specs. A `track` action registers a metadata-delta watch and queues the first analysis request; a periodic observer re-evaluates watched repositories. The fleet bus relay, the observer and the result consumers run when a broker is configured; live consumption of the sync command is not implemented.
 
 ### Local process configuration
 
@@ -16,6 +16,7 @@ RATATOSKR__ADMIN__LISTEN_ADDRESS=127.0.0.1:9095
 RATATOSKR__API__LISTEN_ADDRESS=127.0.0.1:8092
 RATATOSKR__STORAGE__DATABASE_URL=postgres://github:github@127.0.0.1:5435/github
 RATATOSKR__PROVIDER__BASE_URL=https://api.github.com
+RATATOSKR__PROVIDER__TIMEOUT_MS=30000
 RATATOSKR__CREDENTIALS__ENCRYPTION_KEY_HEX=<64 lowercase or uppercase hex characters>
 RATATOSKR__CREDENTIALS__KEY_VERSION=<non-secret key label>
 ```
@@ -27,6 +28,8 @@ RATATOSKR__BUS__URL=nats://127.0.0.1:4222
 RATATOSKR__BUS__NKEY_SEED_PATH=/etc/ratatoskr/github.nkey
 RATATOSKR__INTERNAL__READER_SERVICE_SECRET=<shared bearer secret for the README byte route>
 ```
+
+`RATATOSKR__WATCH__OBSERVE_INTERVAL_SECONDS` (default 3600, `0` disables the observer) and `RATATOSKR__WATCH__BATCH` (default 10) drive the periodic observer. `deploy/systemd/github.conf.example` carries every setting a deployment needs; `services/catalog/tests/deployment_profile.rs` loads it, so it cannot drift.
 
 Both listeners must remain distinct loopback sockets. Provider HTTP is accepted
 only for a numeric loopback origin in synthetic tests. The database URL and
@@ -66,7 +69,7 @@ docker compose up -d --wait
 
 Tests use `GITHUB_CATALOG_TEST_DATABASE_URL`, which defaults to `postgres://github:github@127.0.0.1:5435/github`; CI provisions its own service container.
 
-The bus tests need a JetStream broker: `GITHUB_TEST_NATS_URL` defaults to `nats://127.0.0.1:4225`, which the compose stack publishes. The authorization test also starts its own `nats-server` from `deploy/nats/identity.conf`, so a `nats-server` binary must be on `PATH`; it picks a free port from 57102 to 57119. A missing broker or binary fails those tests rather than skipping them. CI installs a pinned, checksummed `nats-server` and starts a broker on 4225.
+The bus tests need a JetStream broker: `GITHUB_TEST_NATS_URL` defaults to `nats://127.0.0.1:4225`, which the compose stack publishes. The authorization test also starts its own `nats-server` from `deploy/nats/identity.conf`, so a `nats-server` binary must be on `PATH`; it picks a free port from 57710 to 57719. A missing broker or binary fails those tests rather than skipping them. CI installs a pinned, checksummed `nats-server` and starts a broker on 4225.
 
 ## Code size limits
 

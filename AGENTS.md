@@ -25,8 +25,9 @@ It does **not** perform Git mirroring or prove that a backup can be restored. Ph
 The service foundation and most of the catalog behaviour exist: strict configuration, structured
 telemetry, operator health routes, one editable `schema.sql`, disposable-database tests, the CI gate,
 PAT and OAuth credential handling, provider queries, star and list synchronization, mutations, the
-Edge-authenticated repository API, desired-policy publication, repository analysis requests, account
-erasure, and the fleet bus (an outbox relay, three supervised result consumers and the dispatch
+Edge-authenticated repository API, desired-policy publication, repository analysis requests that
+originate from user-owned watches (a `track` action registers one and a periodic observer
+re-evaluates watched repositories), account erasure, time-bounded provider calls, and the fleet bus (an outbox relay, three supervised result consumers and the dispatch
 loops under the service's own NATS identity, plus the bearer-authorized README byte route for
 Knowledge). Still absent: live consumption of `cmd.github.sync.requested.v1` over the bus, the NATS
 transport of account erasure, and an internet-facing API. Do not assume anything beyond this exists

@@ -1,0 +1,38 @@
+# Operator example for ratatoskr-github, a systemd EnvironmentFile (EnvironmentFile=/etc/ratatoskr/github.conf).
+# Copy it to /etc/ratatoskr/github.conf, replace every CHANGE-ME, and keep the file readable by the service user only.
+# `ratatoskr-github-catalog check-config` validates it without starting anything. services/catalog/tests/deployment_profile.rs loads this file through the service's own configuration loader, so it cannot name a key the service no longer reads.
+
+# Operator listener: /live, /ready, /metrics, /version. Host only; allocated in docs/DEPLOYMENT_TARGET.md.
+RATATOSKR__ADMIN__LISTEN_ADDRESS=127.0.0.1:9095
+# Domain API (/v1/gh) behind Edge, plus the internal README byte route. Loopback only; Edge never exposes the internal route.
+RATATOSKR__API__LISTEN_ADDRESS=127.0.0.1:8092
+
+# The catalog database. SECRET: the URL carries the password.
+RATATOSKR__STORAGE__DATABASE_URL=postgres://github:CHANGE-ME@127.0.0.1:5435/github
+
+# The provider. The default is https://api.github.com; every call is bounded by a 5 second connect timeout and this whole-exchange timeout (1000 to 120000).
+RATATOSKR__PROVIDER__TIMEOUT_MS=30000
+
+# Encrypted storage of replacement PATs and OAuth tokens. SECRET: 64 hexadecimal characters (32 bytes). Both keys are set together or neither is.
+RATATOSKR__CREDENTIALS__ENCRYPTION_KEY_HEX=CHANGE-ME
+# Non-secret label of that key, stored with each credential.
+RATATOSKR__CREDENTIALS__KEY_VERSION=key-1
+
+# The fleet bus. Without a URL the service queues outbox rows and observes nothing: no analysis request, policy command or result consumer runs.
+# Edge provisions the three durables this service consumes; start Edge first.
+RATATOSKR__BUS__URL=nats://127.0.0.1:4222
+# Absolute path of the nkey seed (SECRET, read at runtime, never logged). Required for tls://.
+RATATOSKR__BUS__NKEY_SEED_PATH=/etc/ratatoskr/github.nkey
+
+# The README byte route Knowledge reads repository analysis input from. The route is mounted only while this secret is set.
+# SECRET: Knowledge's RATATOSKR__INGEST__GITHUB_README_SERVICE_SECRET must equal it, and Knowledge's RATATOSKR__INGEST__GITHUB_README_BASE_URL must reach the API listener above.
+RATATOSKR__INTERNAL__READER_SERVICE_SECRET=CHANGE-ME
+
+# The periodic observer of watched repositories (a track action registers a watch). Seconds between passes; 0 disables it (at most 604800).
+RATATOSKR__WATCH__OBSERVE_INTERVAL_SECONDS=3600
+# Repositories one pass observes, least recently observed first (1 to 100).
+RATATOSKR__WATCH__BATCH=10
+
+# Optional: the OAuth application whose grant account erasure revokes. Set both or neither. Without them an OAuth credential is erased locally and the acknowledgement reports incomplete external revocation.
+# RATATOSKR__GITHUB_OAUTH__CLIENT_ID=CHANGE-ME
+# RATATOSKR__GITHUB_OAUTH__CLIENT_SECRET=CHANGE-ME
