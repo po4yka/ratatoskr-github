@@ -191,7 +191,8 @@ async fn the_readme_request_is_gated_by_the_budget_the_repository_response_repor
 -> Result<(), Box<dyn std::error::Error>> {
     let database = TestDatabase::create().await?;
     let server = MockServer::start().await;
-    let reset = time::OffsetDateTime::now_utc().unix_timestamp() + 3600;
+    // A reset in the year 2100, so a ledger that reads the real clock still withholds.
+    let reset: i64 = 4_102_444_800;
     // The repository answer leaves one request, which is the reserve floor: the README call
     // would spend the reserve, so the ledger must withhold it.
     Mock::given(method("GET"))

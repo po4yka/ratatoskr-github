@@ -25,6 +25,14 @@ type TestResult = Result<(), Box<dyn std::error::Error>>;
 
 const OWNER: &str = "user:018f0000-0000-7000-8000-000000000d01";
 
+/// A rate-limit reset in the year 2100, so a ledger that reads the real clock still withholds.
+const FAR_FUTURE_RESET_EPOCH: i64 = 4_102_444_800;
+
+/// The instant every pass in this file evaluates its watches at, so no test reads the wall clock.
+fn fixed_now() -> OffsetDateTime {
+    OffsetDateTime::UNIX_EPOCH + time::Duration::days(20_000)
+}
+
 fn body(provider_id: i64, name: &str, description: &str) -> ProviderRepositoryBody {
     ProviderRepositoryBody {
         provider_repository_id: provider_id,
@@ -144,9 +152,7 @@ async fn a_changed_repository_is_requested_and_an_unchanged_one_is_not() -> Test
         .await;
     let observer = observer(&server, 3600, 10)?.expect("a non-zero interval enables the observer");
 
-    let pass = observer
-        .pass(&database.database, OffsetDateTime::now_utc())
-        .await?;
+    let pass = observer.pass(&database.database, fixed_now()).await?;
 
     assert_eq!(
         pass,
@@ -192,9 +198,7 @@ async fn a_pass_observes_at_most_the_batch_oldest_first() -> TestResult {
         .await;
     let observer = observer(&server, 3600, 2)?.expect("enabled");
 
-    let pass = observer
-        .pass(&database.database, OffsetDateTime::now_utc())
-        .await?;
+    let pass = observer.pass(&database.database, fixed_now()).await?;
 
     assert_eq!(pass.unchanged, 2);
     let mut requested: Vec<String> = server
@@ -251,9 +255,7 @@ async fn failing_repositories_do_not_starve_a_healthy_one() -> TestResult {
     let observer = observer(&server, 3600, 2)?.expect("enabled");
 
     for _ in 0..3 {
-        observer
-            .pass(&database.database, OffsetDateTime::now_utc())
-            .await?;
+        observer.pass(&database.database, fixed_now()).await?;
         if !request_owners(&database, "healthy").await?.is_empty() {
             break;
         }
@@ -299,9 +301,7 @@ async fn a_not_modified_pass_queues_the_request_a_crashed_evaluation_left_behind
         .await;
     let observer = observer(&server, 3600, 10)?.expect("enabled");
 
-    let pass = observer
-        .pass(&database.database, OffsetDateTime::now_utc())
-        .await?;
+    let pass = observer.pass(&database.database, fixed_now()).await?;
 
     assert_eq!(pass.unchanged, 1);
     assert_eq!(
@@ -310,9 +310,7 @@ async fn a_not_modified_pass_queues_the_request_a_crashed_evaluation_left_behind
         "the lost evaluation was not repeated from the stored revision"
     );
     // The stored revision is evaluated once: a further pass queues nothing more.
-    observer
-        .pass(&database.database, OffsetDateTime::now_utc())
-        .await?;
+    observer.pass(&database.database, fixed_now()).await?;
     assert_eq!(request_owners(&database, "alpha").await?.len(), 1);
 
     database.cleanup().await?;
@@ -336,14 +334,12 @@ async fn a_withheld_budget_observes_nothing() -> TestResult {
         &TokenRef::from_label(OBSERVER_TOKEN_LABEL),
         &RateLimitHeaders {
             remaining: Some(0),
-            reset_epoch_seconds: Some(OffsetDateTime::now_utc().unix_timestamp() + 3600),
+            reset_epoch_seconds: Some(FAR_FUTURE_RESET_EPOCH),
             ..RateLimitHeaders::default()
         },
     );
 
-    let pass = observer
-        .pass(&database.database, OffsetDateTime::now_utc())
-        .await?;
+    let pass = observer.pass(&database.database, fixed_now()).await?;
 
     assert_eq!(
         pass,
