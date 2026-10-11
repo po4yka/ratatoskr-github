@@ -501,3 +501,62 @@ async fn starred_lists_page_posts_graphql_query_and_normalizes_reply()
     server.verify().await;
     Ok(())
 }
+
+#[tokio::test]
+async fn a_stalled_provider_times_out() -> Result<(), Box<dyn std::error::Error>> {
+    use ratatoskr_github_catalog::provider::ProviderError;
+    use std::time::{Duration, Instant};
+
+    let server = MockServer::start().await;
+    Mock::given(wiremock::matchers::any())
+        .respond_with(ResponseTemplate::new(200).set_delay(Duration::from_secs(3)))
+        .mount(&server)
+        .await;
+    let gateway =
+        ReqwestGithubApi::for_base_url(&server.uri())?.with_timeout(Duration::from_millis(300))?;
+    let oauth_app = ratatoskr_github_catalog::Config::from_environment([
+        ("RATATOSKR__GITHUB_OAUTH__CLIENT_ID", "Iv1.configured-app"),
+        ("RATATOSKR__GITHUB_OAUTH__CLIENT_SECRET", "synthetic-secret"),
+    ])?
+    .github_oauth
+    .credentials()
+    .ok_or("the OAuth configuration must be complete")?;
+
+    let started = Instant::now();
+    let results = [
+        gateway
+            .fetch_repository(None, "acme", "widgets", None)
+            .await
+            .err(),
+        gateway
+            .fetch_readme(None, "acme", "widgets", None)
+            .await
+            .err(),
+        gateway
+            .revoke_oauth_grant(&oauth_app, &SecretString::from("token"))
+            .await
+            .err(),
+        gateway.authenticate_pat("token").await.err(),
+    ];
+
+    for (call, error) in [
+        "fetch_repository",
+        "fetch_readme",
+        "revoke_oauth_grant",
+        "authenticate_pat",
+    ]
+    .into_iter()
+    .zip(results)
+    {
+        assert!(
+            matches!(&error, Some(ProviderError::Transport(source)) if source.is_timeout()),
+            "{call} must fail as a transport timeout, got {error:?}"
+        );
+    }
+    assert!(
+        started.elapsed() < Duration::from_secs(3),
+        "four calls took {:?}",
+        started.elapsed()
+    );
+    Ok(())
+}

@@ -8,6 +8,7 @@ use crate::rate_limit::RateLimitHeaders;
 mod authenticated;
 mod authentication;
 mod rate;
+mod transport;
 
 pub use authenticated::AuthenticatedGithubApi;
 pub use authentication::AuthenticatedUser;
@@ -434,23 +435,6 @@ pub(crate) struct GraphqlRateLimit {
 }
 
 impl ReqwestGithubApi {
-    /// Builds a gateway against an injectable API base URL.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`ProviderError::Transport`] when the HTTP client cannot be
-    /// built.
-    pub fn for_base_url(base_url: &str) -> Result<Self, ProviderError> {
-        let http = reqwest::Client::builder()
-            .redirect(reqwest::redirect::Policy::none())
-            .build()
-            .map_err(ProviderError::Transport)?;
-        Ok(Self {
-            http,
-            base_url: base_url.trim_end_matches('/').to_owned(),
-        })
-    }
-
     /// Binds a replacement credential to a short-lived provider gateway.
     #[must_use]
     pub fn authenticated(self, credential: secrecy::SecretString) -> AuthenticatedGithubApi {

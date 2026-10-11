@@ -338,3 +338,29 @@ fn watch_observer_defaults_and_bounds_are_strict() -> Result<(), Box<dyn std::er
     }
     Ok(())
 }
+
+#[test]
+fn provider_timeout_defaults_and_bounds() -> Result<(), Box<dyn std::error::Error>> {
+    assert_eq!(
+        serde_json::to_value(Config::default())?.pointer("/provider/timeout_ms"),
+        Some(&serde_json::json!(30_000))
+    );
+    for accepted in ["1000", "120000"] {
+        let encoded = serde_json::to_value(Config::from_environment([(
+            "RATATOSKR__PROVIDER__TIMEOUT_MS",
+            accepted,
+        )])?)?;
+        assert_eq!(
+            encoded.pointer("/provider/timeout_ms"),
+            Some(&serde_json::json!(accepted.parse::<u64>()?))
+        );
+    }
+    for refused in ["0", "999", "120001", "-1", "slow", ""] {
+        let diagnostic = Config::from_environment([("RATATOSKR__PROVIDER__TIMEOUT_MS", refused)])
+            .expect_err("an out-of-range provider timeout must be refused")
+            .to_string();
+        assert!(diagnostic.contains("RATATOSKR__PROVIDER__TIMEOUT_MS"));
+        assert!(refused.is_empty() || !diagnostic.contains(refused));
+    }
+    Ok(())
+}

@@ -12,4 +12,4 @@ Every call of the provider adapter SHALL be bounded by a connect timeout of 5 se
 #### Scenario: Erasure cannot hang
 
 - **WHEN** account erasure reaches a provider that never answers the grant revocation
-- **THEN** the erasure returns an error inside the bound and the owner's data is still present
+- **THEN** the erasure returns inside the bound with the incomplete-revocation outcome, because a stalled call is a provider error and local erasure still completes

@@ -10,8 +10,8 @@
 
 ## 3. Bounded provider calls (R2-08 d)
 
-- [ ] 3.1 RED: add `provider_http.rs::a_stalled_provider_times_out`, `account_erasure.rs::erasure_with_a_stalled_revocation_fails_without_deleting` and `config.rs::provider_timeout_defaults_and_bounds`; they fail because no timeout exists.
-- [ ] 3.2 GREEN: add the connect and total timeouts, `with_timeout`, `RATATOSKR__PROVIDER__TIMEOUT_MS`, and pass it from `main.rs`.
+- [x] 3.1 RED: add `provider_http.rs::a_stalled_provider_times_out`, `account_erasure_stalled.rs::erasure_with_a_stalled_revocation_is_bounded_and_incomplete` (a stalled revocation is a provider error, which erasure already reports as incomplete revocation after local erasure) and `config.rs::provider_timeout_defaults_and_bounds`; they fail because no timeout exists.
+- [x] 3.2 GREEN: add the connect and total timeouts, `with_timeout`, `RATATOSKR__PROVIDER__TIMEOUT_MS`, and pass it from `main.rs`.
 
 ## 4. Revocation confirmation (R2-08 e)
 

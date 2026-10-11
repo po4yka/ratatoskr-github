@@ -55,6 +55,8 @@ pub struct ApiConfig {
 pub struct ProviderConfig {
     /// HTTPS provider origin, or a numeric loopback HTTP origin for tests.
     pub base_url: String,
+    /// Longest wait for one whole provider exchange; the connect timeout is fixed at 5 seconds.
+    pub timeout_ms: u64,
 }
 
 /// The periodic observer of watched repositories (XR-021 CONTRACTS.md R2-08 c).
@@ -66,6 +68,9 @@ pub struct WatchConfig {
     pub batch: u32,
 }
 
+/// Bounds of the whole-exchange provider timeout, in milliseconds.
+const MIN_PROVIDER_TIMEOUT_MS: u32 = 1_000;
+const MAX_PROVIDER_TIMEOUT_MS: u32 = 120_000;
 /// Longest observer interval: one week.
 const MAX_OBSERVE_INTERVAL_SECONDS: u32 = 604_800;
 /// Most repositories one observer pass may observe.
@@ -485,6 +490,9 @@ fn apply_entry(config: &mut Config, key: &str, value: &str) -> Result<(), Config
                 .trim_end_matches('/')
                 .clone_into(&mut config.provider.base_url);
         }
+        "RATATOSKR__PROVIDER__TIMEOUT_MS"
+        | "RATATOSKR__WATCH__OBSERVE_INTERVAL_SECONDS"
+        | "RATATOSKR__WATCH__BATCH" => apply_bounded_entry(config, key, value)?,
         "RATATOSKR__STORAGE__DATABASE_URL" => {
             value
                 .parse::<sqlx::postgres::PgConnectOptions>()
@@ -512,13 +520,6 @@ fn apply_entry(config: &mut Config, key: &str, value: &str) -> Result<(), Config
                 ));
             }
             config.internal.reader_service_secret = Some(SecretString::from(value.to_owned()));
-        }
-        "RATATOSKR__WATCH__OBSERVE_INTERVAL_SECONDS" => {
-            config.watch.observe_interval_seconds =
-                parse_bounded(key, value, 0, MAX_OBSERVE_INTERVAL_SECONDS)?;
-        }
-        "RATATOSKR__WATCH__BATCH" => {
-            config.watch.batch = parse_bounded(key, value, 1, MAX_WATCH_BATCH)?;
         }
         "RATATOSKR__CREDENTIALS__ENCRYPTION_KEY_HEX" => {
             config.credentials.encryption_key_hex = Some(value.to_owned());
@@ -578,6 +579,26 @@ fn validate_provider_base_url(key: &str, value: &str) -> Result<(), ConfigError>
     }
 }
 
+/// The keys that carry an integer inside a documented range.
+fn apply_bounded_entry(config: &mut Config, key: &str, value: &str) -> Result<(), ConfigError> {
+    match key {
+        "RATATOSKR__PROVIDER__TIMEOUT_MS" => {
+            config.provider.timeout_ms = u64::from(parse_bounded(
+                key,
+                value,
+                MIN_PROVIDER_TIMEOUT_MS,
+                MAX_PROVIDER_TIMEOUT_MS,
+            )?);
+        }
+        "RATATOSKR__WATCH__OBSERVE_INTERVAL_SECONDS" => {
+            config.watch.observe_interval_seconds =
+                parse_bounded(key, value, 0, MAX_OBSERVE_INTERVAL_SECONDS)?;
+        }
+        _ => config.watch.batch = parse_bounded(key, value, 1, MAX_WATCH_BATCH)?,
+    }
+    Ok(())
+}
+
 fn parse_bounded(key: &str, value: &str, min: u32, max: u32) -> Result<u32, ConfigError> {
     value
         .parse::<u32>()
@@ -618,6 +639,7 @@ impl Default for Config {
             },
             provider: ProviderConfig {
                 base_url: "https://api.github.com".to_owned(),
+                timeout_ms: 30_000,
             },
             storage: StorageConfig {
                 database_url: "postgres://github:github@127.0.0.1:5435/github".to_owned(),
