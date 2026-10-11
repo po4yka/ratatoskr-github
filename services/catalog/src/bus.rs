@@ -14,18 +14,16 @@ use futures_util::StreamExt as _;
 use ratatoskr_backup_contracts::PolicyAcknowledged;
 use ratatoskr_event_envelope::EventEnvelope;
 use ratatoskr_github_catalog::{
-    AnalysisDispatch, BackupPolicyError, Database, WatchError,
-    consume_repository_analysis_completed, consume_repository_analysis_failed,
-    dispatch_due_repository_analysis, publish_due_backup_policy,
-    record_backup_policy_acknowledgment,
+    BackupPolicyError, Database, WatchError, consume_repository_analysis_completed,
+    consume_repository_analysis_failed, record_backup_policy_acknowledgment,
 };
 use ratatoskr_github_contracts::{RepositoryAnalysisCompleted, RepositoryAnalysisFailed};
-use time::OffsetDateTime;
 use tokio::sync::watch;
 use tokio::task::JoinSet;
 
 use crate::Lifecycle;
 use crate::observer::WatchObserver;
+use crate::relay::relay_loop;
 
 /// The events stream every GitHub subject lives on, except the Vault command.
 const EVENTS_STREAM: &str = "ratatoskr_events";
@@ -34,17 +32,7 @@ const KNOWLEDGE_PRODUCER: &str = "ratatoskr-knowledge";
 /// Producer allowed to publish the Vault policy acknowledgement.
 const VAULT_PRODUCER: &str = "ratatoskr-vault";
 
-const REQUESTED_SUBJECT: &str = "evt.knowledge.repository_analysis.requested.v1";
-const APPLY_SUBJECT: &str = "cmd.vault.backup_policy.apply_requested.v1";
-/// The closed list of subjects the relay publishes (S02 rule 2). An outbox subject outside it is a
-/// programming error: the relay stops with [`BusError::UnknownSubject`] and never skips the row.
-const RELAYED_SUBJECTS: [&str; 2] = [REQUESTED_SUBJECT, APPLY_SUBJECT];
-
-const TICK: Duration = Duration::from_secs(1);
-const PUBACK_TIMEOUT: Duration = Duration::from_secs(5);
 const NAK_DELAY: Duration = Duration::from_secs(2);
-const RELAY_BATCH: i64 = 32;
-const DISPATCH_BATCH: u32 = 64;
 const SHUTDOWN_GRACE: Duration = Duration::from_secs(5);
 
 /// One Edge-provisioned durable this service verifies and never creates.
@@ -198,7 +186,12 @@ impl Bus {
             observer,
         } = self;
         let mut tasks: JoinSet<Result<(), BusError>> = JoinSet::new();
-        tasks.spawn(relay_loop(database.clone(), context, shutdown.clone()));
+        tasks.spawn(relay_loop(
+            database.clone(),
+            context,
+            lifecycle.clone(),
+            shutdown.clone(),
+        ));
         if let Some(observer) = observer {
             // A pass makes provider calls that may each take the whole provider timeout, so it
             // runs as its own supervised task and never delays the relay tick.
@@ -284,118 +277,6 @@ async fn open_durable(
         return Err(mismatch);
     }
     Ok(consumer)
-}
-
-// ---- relay and dispatch -------------------------------------------------------------------
-
-async fn relay_loop(
-    database: Database,
-    context: jetstream::Context,
-    mut shutdown: watch::Receiver<bool>,
-) -> Result<(), BusError> {
-    let mut ticker = tokio::time::interval(TICK);
-    ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
-    loop {
-        // cancel-safe: Interval::tick and watch::Receiver::wait_for retain no partial work.
-        tokio::select! {
-            biased;
-            _ = shutdown.wait_for(|stopping| *stopping) => return Ok(()),
-            _ = ticker.tick() => {}
-        }
-        dispatch_due(&database).await?;
-        flush_outbox(&database, &context).await?;
-    }
-}
-
-/// Moves due catalog work into the outbox: queued analysis requests and the dirty backup policy.
-async fn dispatch_due(database: &Database) -> Result<(), BusError> {
-    for _ in 0..DISPATCH_BATCH {
-        let dispatched = dispatch_due_repository_analysis(database, OffsetDateTime::now_utc())
-            .await
-            .map_err(|_| BusError::Catalog)?;
-        if dispatched == AnalysisDispatch::NotDue {
-            break;
-        }
-    }
-    publish_due_backup_policy(database, OffsetDateTime::now_utc())
-        .await
-        .map_err(|_| BusError::Catalog)?;
-    Ok(())
-}
-
-/// Publishes every due outbox row and sets `published_at` only after the `PubAck` resolves.
-///
-/// A publish failure leaves the row unpublished, records the attempt with a safe error class and
-/// backs the row off, so a failing head row never starves later rows. A denied publish is
-/// indistinguishable from a timeout here: check the NATS server log for a Publish Violation.
-async fn flush_outbox(database: &Database, context: &jetstream::Context) -> Result<(), BusError> {
-    let rows: Vec<(uuid::Uuid, String, serde_json::Value)> = sqlx::query_as(
-        "select message_id, subject, payload from github_catalog.outbox_events
-         where published_at is null and next_attempt_at <= now()
-         order by created_at, message_id limit $1",
-    )
-    .bind(RELAY_BATCH)
-    .fetch_all(database.pool())
-    .await
-    .map_err(|_| BusError::Catalog)?;
-    for (message_id, subject, payload) in rows {
-        if !RELAYED_SUBJECTS.contains(&subject.as_str()) {
-            return Err(BusError::UnknownSubject);
-        }
-        let bytes = serde_json::to_vec(&payload).map_err(|_| BusError::Catalog)?;
-        match publish(context, &subject, message_id, bytes).await {
-            Ok(()) => {
-                sqlx::query(
-                    "update github_catalog.outbox_events
-                     set published_at = now(), last_error = null
-                     where message_id = $1 and published_at is null",
-                )
-                .bind(message_id)
-                .execute(database.pool())
-                .await
-                .map_err(|_| BusError::Catalog)?;
-            }
-            Err(class) => {
-                tracing::warn!(
-                    class,
-                    "outbox row was not acknowledged by the bus; check the NATS server log for a Publish Violation"
-                );
-                sqlx::query(
-                    "update github_catalog.outbox_events
-                     set attempt_count = attempt_count + 1, last_error = $2,
-                         next_attempt_at = now()
-                             + make_interval(secs => least(300, power(2, attempt_count + 1))::float8)
-                     where message_id = $1 and published_at is null",
-                )
-                .bind(message_id)
-                .bind(class)
-                .execute(database.pool())
-                .await
-                .map_err(|_| BusError::Catalog)?;
-            }
-        }
-    }
-    Ok(())
-}
-
-/// Publishes one row and waits for its `PubAck`; the error is a safe class, never broker text.
-async fn publish(
-    context: &jetstream::Context,
-    subject: &str,
-    message_id: uuid::Uuid,
-    bytes: Vec<u8>,
-) -> Result<(), &'static str> {
-    let mut headers = async_nats::HeaderMap::new();
-    headers.insert("Nats-Msg-Id", message_id.to_string());
-    let pending = context
-        .publish_with_headers(subject.to_owned(), headers, bytes.into())
-        .await
-        .map_err(|_| "publish_failed")?;
-    match tokio::time::timeout(PUBACK_TIMEOUT, pending).await {
-        Ok(Ok(_ack)) => Ok(()),
-        Ok(Err(_)) => Err("ack_failed"),
-        Err(_) => Err("ack_timeout"),
-    }
 }
 
 // ---- consumers ----------------------------------------------------------------------------

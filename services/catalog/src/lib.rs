@@ -4,8 +4,9 @@
 //! Process boundary for Ratatoskr GitHub Catalog.
 
 use std::sync::Arc;
-use std::sync::atomic::{AtomicU8, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU8, AtomicU64, Ordering};
 
+use axum::Json;
 use axum::Router;
 use axum::http::{HeaderValue, StatusCode, header};
 use axum::middleware::{self, Next};
@@ -15,6 +16,7 @@ use axum::routing::get;
 pub mod bus;
 pub mod observer;
 mod readme_blobs;
+mod relay;
 mod repository_action_attempts;
 mod repository_api;
 
@@ -144,10 +146,20 @@ fn parse_import_legacy(arguments: &[String]) -> Result<OperatorCommand, Operator
     }
 }
 
+/// What the outbox relay reports: its health and the counters behind `/metrics`.
+#[derive(Debug)]
+struct PublisherHealth {
+    healthy: AtomicBool,
+    published: AtomicU64,
+    failed: AtomicU64,
+    undeliverable_payload_too_large: AtomicU64,
+}
+
 /// Shared process lifecycle used by readiness checks.
 #[derive(Debug, Clone)]
 pub struct Lifecycle {
     state: Arc<AtomicU8>,
+    publisher: Arc<PublisherHealth>,
 }
 
 impl Lifecycle {
@@ -156,7 +168,36 @@ impl Lifecycle {
     pub fn starting() -> Self {
         Self {
             state: Arc::new(AtomicU8::new(STARTING)),
+            publisher: Arc::new(PublisherHealth {
+                healthy: AtomicBool::new(true),
+                published: AtomicU64::new(0),
+                failed: AtomicU64::new(0),
+                undeliverable_payload_too_large: AtomicU64::new(0),
+            }),
         }
+    }
+
+    /// Sets the `bus_publish` readiness check fed by the outbox relay (XR-021 CONTRACTS.md
+    /// R2-03). An unhealthy publisher only flips readiness; it never stops the relay.
+    pub fn set_publisher_healthy(&self, healthy: bool) {
+        self.publisher.healthy.store(healthy, Ordering::Release);
+    }
+
+    /// Counts one relay publication attempt by its outcome.
+    pub fn record_publication(&self, published: bool) {
+        let counter = if published {
+            &self.publisher.published
+        } else {
+            &self.publisher.failed
+        };
+        counter.fetch_add(1, Ordering::Relaxed);
+    }
+
+    /// Counts one outbox row classed undeliverable because it exceeds the broker payload limit.
+    pub fn record_undeliverable_payload_too_large(&self) {
+        self.publisher
+            .undeliverable_payload_too_large
+            .fetch_add(1, Ordering::Relaxed);
     }
 
     /// Marks storage startup complete.
@@ -174,10 +215,14 @@ impl Lifecycle {
         self.state.store(FAILED, Ordering::Release);
     }
 
-    /// Reports whether startup has completed and drain has not begun.
+    /// Reports whether startup has completed, drain has not begun, and the relay can publish.
     #[must_use]
     pub fn is_ready(&self) -> bool {
-        self.state.load(Ordering::Acquire) == READY
+        self.state.load(Ordering::Acquire) == READY && self.publisher_healthy()
+    }
+
+    fn publisher_healthy(&self) -> bool {
+        self.publisher.healthy.load(Ordering::Acquire)
     }
 }
 
@@ -196,16 +241,42 @@ async fn live() -> StatusCode {
     StatusCode::OK
 }
 
-async fn ready(axum::extract::State(lifecycle): axum::extract::State<Lifecycle>) -> StatusCode {
-    if lifecycle.is_ready() {
+/// The readiness answer: the status and the checks that are failing, so an operator sees the
+/// failing publisher instead of a bare 503.
+async fn ready(
+    axum::extract::State(lifecycle): axum::extract::State<Lifecycle>,
+) -> (StatusCode, Json<serde_json::Value>) {
+    let mut failing = Vec::new();
+    if !lifecycle.publisher_healthy() {
+        failing.push("bus_publish");
+    }
+    let status = if lifecycle.is_ready() {
         StatusCode::OK
     } else {
         StatusCode::SERVICE_UNAVAILABLE
-    }
+    };
+    (
+        status,
+        Json(serde_json::json!({ "ready": status == StatusCode::OK, "failing": failing })),
+    )
 }
 
-async fn metrics() -> &'static str {
-    "# TYPE github_catalog_process_info gauge\ngithub_catalog_process_info 1\n"
+async fn metrics(axum::extract::State(lifecycle): axum::extract::State<Lifecycle>) -> String {
+    let publisher = &lifecycle.publisher;
+    format!(
+        "# TYPE github_catalog_process_info gauge\n\
+         github_catalog_process_info 1\n\
+         # TYPE github_catalog_outbox_publications_total counter\n\
+         github_catalog_outbox_publications_total{{outcome=\"published\"}} {}\n\
+         github_catalog_outbox_publications_total{{outcome=\"failed\"}} {}\n\
+         # TYPE github_catalog_outbox_undeliverable_total counter\n\
+         github_catalog_outbox_undeliverable_total{{class=\"payload_too_large\"}} {}\n",
+        publisher.published.load(Ordering::Relaxed),
+        publisher.failed.load(Ordering::Relaxed),
+        publisher
+            .undeliverable_payload_too_large
+            .load(Ordering::Relaxed),
+    )
 }
 
 async fn version() -> &'static str {

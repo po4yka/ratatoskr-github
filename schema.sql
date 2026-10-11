@@ -620,6 +620,9 @@ create table if not exists github_catalog.outbox_events (
     attempt_count   integer not null default 0,
     next_attempt_at timestamptz not null default now(),
     last_error      text,
+    -- Set when the envelope can never be published (larger than the broker's payload limit); such
+    -- a row is skipped by the relay and never counts against readiness.
+    undeliverable_at timestamptz,
     constraint outbox_subject_is_known check (subject in (
         'github.sync.requested.v1',
         'github.repository.observed.v1',
@@ -632,7 +635,7 @@ create table if not exists github_catalog.outbox_events (
     constraint outbox_payload_is_object check (jsonb_typeof(payload) = 'object'),
     constraint outbox_attempt_count_check check (attempt_count >= 0),
     constraint outbox_last_error_check check (last_error is null or last_error in (
-        'publish_failed', 'ack_failed', 'ack_timeout'
+        'publish_failed', 'ack_failed', 'ack_timeout', 'payload_too_large'
     ))
 );
 

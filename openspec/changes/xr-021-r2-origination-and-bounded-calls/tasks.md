@@ -20,8 +20,8 @@
 
 ## 5. Relay health reaches readiness (R2-03, R2-04 rule 2)
 
-- [ ] 5.1 RED: add `services/catalog/tests/bus_health.rs`; it fails because readiness stays 200 and an oversize row is retried forever.
-- [ ] 5.2 GREEN: add `Lifecycle::set_publisher_healthy`, the `bus_publish` check, `outbox_events.undeliverable_at` and the counters.
+- [x] 5.1 RED: add `services/catalog/tests/bus_health.rs`; it fails because readiness stays 200 and an oversize row is retried forever.
+- [x] 5.2 GREEN: add `Lifecycle::set_publisher_healthy`, the `bus_publish` check, `outbox_events.undeliverable_at` and the counters.
 
 ## 6. Documentation and operator example (R2-10)
 

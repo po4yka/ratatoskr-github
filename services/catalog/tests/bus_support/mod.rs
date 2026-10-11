@@ -28,6 +28,8 @@ use time::format_description::well_known::Rfc3339;
 use tokio::sync::watch;
 use uuid::Uuid;
 
+pub mod authorized_broker;
+
 pub type TestResult = Result<(), Box<dyn std::error::Error>>;
 
 pub const EVENTS_STREAM: &str = "ratatoskr_events";

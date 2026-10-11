@@ -4,9 +4,6 @@
 //! A denied publish is invisible to the client (`Publish Violation` appears only in the broker log),
 //! so every refusal below is observed as a missing acknowledgement or a missing stream message.
 
-use std::net::TcpListener;
-use std::path::{Path, PathBuf};
-use std::process::{Child, Command, Stdio};
 use std::time::Duration;
 
 use async_nats::jetstream;
@@ -23,6 +20,7 @@ use tokio::sync::watch;
 use uuid::Uuid;
 
 mod bus_support;
+use bus_support::authorized_broker::AuthorizedBroker;
 use bus_support::{
     ACKNOWLEDGED_SUBJECT, APPLY_SUBJECT, COMPLETED_SUBJECT, EVENTS_STREAM, GITHUB_DURABLES,
     REQUESTED_SUBJECT, TestResult, eventually, fact_envelope, provision, publish_acked,
@@ -31,152 +29,6 @@ use bus_support::{
 
 const OWNER: &str = "user:018f0000-0000-7000-8000-000000000971";
 const KNOWLEDGE_DURABLE: &str = "ratatoskr_knowledge_repository_requests";
-const FRAGMENT: &str = "deploy/nats/identity.conf";
-const PLACEHOLDER_PREFIX: &str = "UREPLACE_ME_WITH_THE_PUBLIC_NKEY_OF_RATATOSKR_GITHUB_";
-
-/// A `nats-server` child with authorization on, killed when the test ends.
-struct AuthorizedBroker {
-    child: Child,
-    port: u16,
-    admin_seed: PathBuf,
-    github_seed: PathBuf,
-    _directory: tempdir::Directory,
-}
-
-mod tempdir {
-    //! A throwaway directory under the cargo target directory, removed on drop.
-    use std::path::{Path, PathBuf};
-
-    #[derive(Debug)]
-    pub(super) struct Directory(PathBuf);
-
-    impl Directory {
-        pub(super) fn create(name: &str) -> std::io::Result<Self> {
-            let path = Path::new(env!("CARGO_TARGET_TMPDIR")).join(name);
-            std::fs::create_dir_all(&path)?;
-            Ok(Self(path))
-        }
-
-        pub(super) fn path(&self) -> &Path {
-            &self.0
-        }
-    }
-
-    impl Drop for Directory {
-        fn drop(&mut self) {
-            let _removed = std::fs::remove_dir_all(&self.0);
-        }
-    }
-}
-
-impl Drop for AuthorizedBroker {
-    fn drop(&mut self) {
-        let _killed = self.child.kill();
-        let _reaped = self.child.wait();
-    }
-}
-
-/// A free port in the range reserved for this repository's private test servers.
-fn free_port() -> Result<u16, Box<dyn std::error::Error>> {
-    (57_102..=57_119)
-        .find(|port| TcpListener::bind(("127.0.0.1", *port)).is_ok())
-        .ok_or_else(|| "no free port in 57102..=57119".into())
-}
-
-fn write_seed(
-    directory: &Path,
-    name: &str,
-    pair: &nkeys::KeyPair,
-) -> Result<PathBuf, Box<dyn std::error::Error>> {
-    let path = directory.join(name);
-    std::fs::write(&path, pair.seed()?)?;
-    Ok(path)
-}
-
-/// The reviewed fragment with its placeholder swapped for the test identity's public key.
-fn github_stanza(public_key: &str) -> Result<String, Box<dyn std::error::Error>> {
-    let fragment = std::fs::read_to_string(
-        Path::new(env!("CARGO_MANIFEST_DIR"))
-            .join("../..")
-            .join(FRAGMENT),
-    )?;
-    assert!(
-        fragment.contains(PLACEHOLDER_PREFIX),
-        "the fragment must carry the GITHUB placeholder nkey"
-    );
-    Ok(fragment
-        .lines()
-        .map(|line| {
-            if line.trim_start().starts_with("nkey:") {
-                format!("nkey: {public_key}")
-            } else {
-                line.to_owned()
-            }
-        })
-        .collect::<Vec<_>>()
-        .join("\n"))
-}
-
-impl AuthorizedBroker {
-    fn start() -> Result<Self, Box<dyn std::error::Error>> {
-        let directory = tempdir::Directory::create(&format!("authorized-bus-{}", Uuid::now_v7()))?;
-        let port = free_port()?;
-        let admin = nkeys::KeyPair::new_user();
-        let github = nkeys::KeyPair::new_user();
-        let admin_seed = write_seed(directory.path(), "admin.nkey", &admin)?;
-        let github_seed = write_seed(directory.path(), "github.nkey", &github)?;
-        let configuration = format!(
-            "port: {port}\nhost: 127.0.0.1\njetstream {{ store_dir: \"{store}\" }}\n\
-             authorization {{ users: [\n\
-             {{ nkey: {admin_key}, permissions: {{ publish: {{ allow: [\">\"] }}, subscribe: {{ allow: [\">\"] }} }} }},\n\
-             {stanza}\n] }}\n",
-            store = directory.path().join("store").display(),
-            admin_key = admin.public_key(),
-            stanza = github_stanza(&github.public_key())?,
-        );
-        let configuration_path = directory.path().join("broker.conf");
-        std::fs::write(&configuration_path, configuration)?;
-        let child = Command::new("nats-server")
-            .arg("-c")
-            .arg(&configuration_path)
-            .stdout(Stdio::null())
-            .stderr(Stdio::null())
-            .spawn()?;
-        let broker = Self {
-            child,
-            port,
-            admin_seed,
-            github_seed,
-            _directory: directory,
-        };
-        broker.wait_until_listening()?;
-        Ok(broker)
-    }
-
-    fn wait_until_listening(&self) -> Result<(), Box<dyn std::error::Error>> {
-        let deadline = std::time::Instant::now() + Duration::from_secs(10);
-        while std::net::TcpStream::connect(("127.0.0.1", self.port)).is_err() {
-            if std::time::Instant::now() >= deadline {
-                return Err("the authorized broker did not start listening".into());
-            }
-            std::thread::sleep(Duration::from_millis(50));
-        }
-        Ok(())
-    }
-
-    fn url(&self) -> String {
-        format!("nats://127.0.0.1:{}", self.port)
-    }
-
-    async fn connect(&self, seed: &Path) -> Result<async_nats::Client, Box<dyn std::error::Error>> {
-        let seed = std::fs::read_to_string(seed)?;
-        Ok(
-            async_nats::ConnectOptions::with_nkey(seed.trim().to_owned())
-                .connect(self.url())
-                .await?,
-        )
-    }
-}
 
 #[tokio::test]
 async fn the_github_identity_relays_and_consumes_what_it_needs_and_is_refused_the_rest()
