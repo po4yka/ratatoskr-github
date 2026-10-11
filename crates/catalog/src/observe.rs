@@ -102,7 +102,11 @@ pub struct WatchedRepository {
 }
 
 /// Selects at most `batch` repositories that have an enabled watch and an active `owner/name`
-/// alias, the least recently observed first (XR-021 CONTRACTS.md R2-08 c).
+/// alias, the least recently attempted first (XR-021 CONTRACTS.md R2-08 c).
+///
+/// Never-attempted repositories come first, then those attempted longest ago; the order rotates on
+/// the attempt recorded by [`record_observation_attempt`], not on success, so repositories the
+/// observer cannot read never hold the front of the queue.
 ///
 /// # Errors
 ///
@@ -123,7 +127,8 @@ pub async fn select_watched_repositories(
          where exists (
              select 1 from github_catalog.repository_watches watch
              where watch.repository_id = metadata.repository_id and watch.enabled)
-         order by metadata.fetched_at, metadata.repository_id
+         order by metadata.observe_attempted_at nulls first, metadata.fetched_at,
+                  metadata.repository_id
          limit $1",
     )
     .bind(i64::from(batch))
@@ -143,6 +148,27 @@ pub async fn select_watched_repositories(
             })
         })
         .collect())
+}
+
+/// Records that the periodic observer attempted `repository_id`, whatever the outcome, so the
+/// next selection rotates to the repositories attempted longer ago.
+///
+/// # Errors
+///
+/// Returns [`crate::database::PersistenceError`] when the database refuses the update.
+pub async fn record_observation_attempt(
+    database: &Database,
+    repository_id: Uuid,
+) -> Result<(), crate::database::PersistenceError> {
+    sqlx::query(
+        "update github_catalog.repository_metadata set observe_attempted_at = now()
+         where repository_id = $1",
+    )
+    .bind(repository_id)
+    .execute(database.pool())
+    .await
+    .map_err(crate::database::PersistenceError::Query)?;
+    Ok(())
 }
 
 /// The provider side of one observation: the gateway, the shared budget, and the credential the

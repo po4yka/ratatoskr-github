@@ -212,6 +212,64 @@ async fn a_pass_observes_at_most_the_batch_oldest_first() -> TestResult {
 }
 
 #[tokio::test]
+async fn failing_repositories_do_not_starve_a_healthy_one() -> TestResult {
+    let database = TestDatabase::create().await?;
+    let server = MockServer::start().await;
+    // Two repositories the unauthenticated observer can never read (a private repository tracked
+    // with a user credential, a deleted one) are older than a healthy changed repository, and
+    // the batch is two: a selection that rotates only on success would pick them forever.
+    for (index, name) in ["private", "deleted"].into_iter().enumerate() {
+        let repository_id = seed(&database, 975_000 + i64::try_from(index)?, name).await?;
+        sqlx::query(
+            "update github_catalog.repository_metadata
+             set fetched_at = now() - interval '1 hour' where repository_id = $1",
+        )
+        .bind(repository_id)
+        .execute(database.database.pool())
+        .await?;
+    }
+    seed(&database, 975_010, "healthy").await?;
+    Mock::given(method("GET"))
+        .and(path_regex("^/repos/acme/(private|deleted)$"))
+        .respond_with(ResponseTemplate::new(404))
+        .mount(&server)
+        .await;
+    Mock::given(method("GET"))
+        .and(path("/repos/acme/healthy"))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .set_body_json(provider_body(975_010, "healthy", "v2"))
+                .insert_header("etag", "\"v2\""),
+        )
+        .mount(&server)
+        .await;
+    Mock::given(method("GET"))
+        .and(path("/repos/acme/healthy/readme"))
+        .respond_with(ResponseTemplate::new(404))
+        .mount(&server)
+        .await;
+    let observer = observer(&server, 3600, 2)?.expect("enabled");
+
+    for _ in 0..3 {
+        observer
+            .pass(&database.database, OffsetDateTime::now_utc())
+            .await?;
+        if !request_owners(&database, "healthy").await?.is_empty() {
+            break;
+        }
+    }
+
+    assert_eq!(
+        request_owners(&database, "healthy").await?,
+        vec![OWNER.to_owned()],
+        "the healthy repository was never observed behind the failing ones"
+    );
+
+    database.cleanup().await?;
+    Ok(())
+}
+
+#[tokio::test]
 async fn interval_zero_disables_the_observer() -> TestResult {
     let server = MockServer::start().await;
     assert!(observer(&server, 0, 10)?.is_none());
@@ -287,6 +345,48 @@ async fn the_running_observer_passes_every_interval_until_shutdown() -> TestResu
         assert!(
             tokio::time::Instant::now() < deadline,
             "the observer never queued the request"
+        );
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+    stop.send(true)?;
+    task.await??;
+
+    database.cleanup().await?;
+    Ok(())
+}
+
+#[tokio::test]
+async fn the_first_pass_runs_shortly_after_boot_not_a_full_interval_later() -> TestResult {
+    let database = TestDatabase::create().await?;
+    let server = MockServer::start().await;
+    seed(&database, 976_001, "alpha").await?;
+    Mock::given(method("GET"))
+        .and(path("/repos/acme/alpha"))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .set_body_json(provider_body(976_001, "alpha", "v2"))
+                .insert_header("etag", "\"v2\""),
+        )
+        .mount(&server)
+        .await;
+    Mock::given(method("GET"))
+        .and(path("/repos/acme/alpha/readme"))
+        .respond_with(ResponseTemplate::new(404))
+        .mount(&server)
+        .await;
+    // A service restarted more often than the hourly interval must still observe.
+    let observer = observer(&server, 3600, 10)?.expect("enabled");
+    let (stop, shutdown) = watch::channel(false);
+    let task = tokio::spawn(observer.run(database.database.clone(), shutdown));
+
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(15);
+    loop {
+        if !request_owners(&database, "alpha").await?.is_empty() {
+            break;
+        }
+        assert!(
+            tokio::time::Instant::now() < deadline,
+            "no pass ran within 15 seconds of boot"
         );
         tokio::time::sleep(Duration::from_millis(100)).await;
     }

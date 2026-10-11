@@ -164,6 +164,9 @@ create table if not exists github_catalog.repository_metadata (
     readme_revision  jsonb,
     content_hash     text not null,
     fetched_at       timestamptz not null,
+    -- The last periodic observation attempt of any outcome, so a repository that cannot be read
+    -- rotates behind the others instead of starving them. Null means never attempted.
+    observe_attempted_at timestamptz,
     constraint repository_metadata_topics_is_array check (jsonb_typeof(topics) = 'array'),
     constraint repository_metadata_readme_revision_is_object
         check (readme_revision is null or jsonb_typeof(readme_revision) = 'object')

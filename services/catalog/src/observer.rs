@@ -6,13 +6,17 @@ use ratatoskr_github_catalog::provider::ReqwestGithubApi;
 use ratatoskr_github_catalog::rate_limit::{RateLimitLedger, TokenRef};
 use ratatoskr_github_catalog::{
     Database, ObserveError, ObserveOutcome, WatchConfig, observe_repository,
-    select_watched_repositories,
+    record_observation_attempt, select_watched_repositories,
 };
 use time::OffsetDateTime;
 use tokio::sync::watch;
 
 /// Budget label every observer request is accounted under: the observer is unauthenticated.
 pub const OBSERVER_TOKEN_LABEL: &str = "watch-observer";
+
+/// How long after boot the first pass runs when the interval is longer, so a service restarted
+/// more often than the interval still observes.
+const FIRST_PASS_DELAY: Duration = Duration::from_secs(5);
 
 /// What one observer pass did.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
@@ -82,7 +86,7 @@ impl WatchObserver {
         let token = TokenRef::from_label(OBSERVER_TOKEN_LABEL);
         let mut pass = ObserverPass::default();
         for repository in watched {
-            match observe_repository(
+            let outcome = observe_repository(
                 database,
                 &self.gateway,
                 &self.ledger,
@@ -90,8 +94,15 @@ impl WatchObserver {
                 &repository.alias,
                 now,
             )
-            .await
-            {
+            .await;
+            // A withheld budget attempted nothing, so the repository keeps its place; every
+            // other outcome, failures included, moves it behind the repositories not yet tried.
+            if !matches!(outcome, Ok(ObserveOutcome::RateLimited { .. })) {
+                record_observation_attempt(database, repository.repository_id)
+                    .await
+                    .map_err(|_| ObserverError::Catalog)?;
+            }
+            match outcome {
                 Ok(ObserveOutcome::Observed { .. }) => pass.observed += 1,
                 Ok(ObserveOutcome::NotModified { .. }) => pass.unchanged += 1,
                 Ok(ObserveOutcome::RateLimited { .. }) => {
@@ -124,8 +135,8 @@ impl WatchObserver {
         database: Database,
         mut shutdown: watch::Receiver<bool>,
     ) -> Result<(), ObserverError> {
-        let mut ticker =
-            tokio::time::interval_at(tokio::time::Instant::now() + self.interval, self.interval);
+        let first_pass = tokio::time::Instant::now() + self.interval.min(FIRST_PASS_DELAY);
+        let mut ticker = tokio::time::interval_at(first_pass, self.interval);
         ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
         loop {
             // cancel-safe: Interval::tick and watch::Receiver::wait_for retain no partial work.

@@ -81,7 +81,7 @@ pub use mutations::{
 };
 pub use observe::{
     ObserveError, ObserveOutcome, ProviderAccess, WatchedRepository, observe_repository,
-    record_fresh_repository, select_watched_repositories,
+    record_fresh_repository, record_observation_attempt, select_watched_repositories,
 };
 pub use snapshot::{FullSnapshotOutcome, SnapshotError, run_full_snapshot};
 pub use star_lists::{

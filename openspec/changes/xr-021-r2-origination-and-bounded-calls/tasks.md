@@ -28,6 +28,11 @@
 - [x] 6.1 RED: add `services/catalog/tests/deployment_profile.rs::the_shipped_example_loads_and_enables_the_bus_and_the_reader_route`; it fails because the example is absent.
 - [x] 6.2 GREEN: ship `deploy/systemd/github.conf.example` and rewrite README, DEVELOPMENT.md and AGENTS.md where they say watches or event publication do not exist.
 
-## 7. Final gate
+## 7. Observer rotation (review fixes, R2-08 c)
 
-- [x] 7.1 Run the full local gate and `openspec validate --all --strict`.
+- [x] 7.1 RED: add `watch_observer.rs::failing_repositories_do_not_starve_a_healthy_one` (batch repositories that answer 404 are older than a healthy changed one) and `the_first_pass_runs_shortly_after_boot_not_a_full_interval_later`; they fail because selection rotates only on success and the first pass waits a full interval.
+- [x] 7.2 GREEN: add `repository_metadata.observe_attempted_at` (`schema.sql` in place), order the selection by it, record it after every attempt except a withheld budget, and start the first pass after at most five seconds.
+
+## 8. Final gate
+
+- [ ] 8.1 Run the full local gate and `openspec validate --all --strict`.
