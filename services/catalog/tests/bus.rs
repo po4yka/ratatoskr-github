@@ -471,3 +471,65 @@ async fn a_tracked_repository_publishes_one_requested_event() -> TestResult {
     harness.database.cleanup().await?;
     Ok(())
 }
+
+#[tokio::test]
+async fn the_supervised_bus_runs_the_watch_observer() -> TestResult {
+    let _broker = BROKER.lock().await;
+    let url = broker_url();
+    let client = async_nats::connect(&url).await?;
+    provision(&client, &GITHUB_DURABLES).await?;
+    let harness = action_support::Harness::start(Some(action_support::README_TEXT)).await?;
+    let (status, answer) = harness
+        .act(
+            action_support::FIRST_USER,
+            &action_support::action_request(
+                "track",
+                "bus-observer.018f0000-0000-7000-8000-000000000c02",
+            ),
+        )
+        .await?;
+    assert_eq!(status, 200, "track answer: {answer}");
+    let repository_gets = || async {
+        harness
+            .provider
+            .received_requests()
+            .await
+            .unwrap_or_default()
+            .iter()
+            .filter(|request| request.url.path() == "/repos/owner/repository")
+            .count()
+    };
+    assert_eq!(
+        repository_gets().await,
+        1,
+        "only the track action has called so far"
+    );
+
+    let observer = ratatoskr_github_catalog_service::observer::WatchObserver::new(
+        &ratatoskr_github_catalog::WatchConfig {
+            observe_interval_seconds: 1,
+            batch: 10,
+        },
+        ratatoskr_github_catalog::provider::ReqwestGithubApi::for_base_url(
+            &harness.provider.uri(),
+        )?,
+    );
+    let bus = Bus::connect(&settings(&url)).await?.with_observer(observer);
+    let lifecycle = Lifecycle::starting();
+    lifecycle.mark_ready();
+    let (stop, shutdown) = watch::channel(false);
+    let task = tokio::spawn(bus.supervise(harness.database.database.clone(), lifecycle, shutdown));
+
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(15);
+    while repository_gets().await < 2 {
+        assert!(
+            tokio::time::Instant::now() < deadline,
+            "the supervised observer never observed the watched repository"
+        );
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+    stop.send(true)?;
+    task.await??;
+    harness.database.cleanup().await?;
+    Ok(())
+}

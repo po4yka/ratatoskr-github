@@ -286,3 +286,55 @@ fn reader_service_secret_is_accepted_but_never_serialized_or_debugged()
     }
     Ok(())
 }
+
+#[test]
+fn watch_observer_defaults_and_bounds_are_strict() -> Result<(), Box<dyn std::error::Error>> {
+    let encoded = serde_json::to_value(Config::default())?;
+    assert_eq!(
+        encoded.pointer("/watch/observe_interval_seconds"),
+        Some(&serde_json::json!(3600))
+    );
+    assert_eq!(
+        encoded.pointer("/watch/batch"),
+        Some(&serde_json::json!(10))
+    );
+
+    let configured = Config::from_environment([
+        ("RATATOSKR__WATCH__OBSERVE_INTERVAL_SECONDS", "604800"),
+        ("RATATOSKR__WATCH__BATCH", "100"),
+    ])?;
+    let encoded = serde_json::to_value(configured)?;
+    assert_eq!(
+        encoded.pointer("/watch/observe_interval_seconds"),
+        Some(&serde_json::json!(604_800))
+    );
+    assert_eq!(
+        encoded.pointer("/watch/batch"),
+        Some(&serde_json::json!(100))
+    );
+    // Zero disables the observer and is the only accepted value below one.
+    assert!(
+        Config::from_environment([("RATATOSKR__WATCH__OBSERVE_INTERVAL_SECONDS", "0")]).is_ok()
+    );
+    assert!(Config::from_environment([("RATATOSKR__WATCH__BATCH", "1")]).is_ok());
+
+    for (key, value) in [
+        ("RATATOSKR__WATCH__OBSERVE_INTERVAL_SECONDS", "604801"),
+        ("RATATOSKR__WATCH__OBSERVE_INTERVAL_SECONDS", "-1"),
+        ("RATATOSKR__WATCH__OBSERVE_INTERVAL_SECONDS", "hourly"),
+        ("RATATOSKR__WATCH__OBSERVE_INTERVAL_SECONDS", ""),
+        ("RATATOSKR__WATCH__BATCH", "0"),
+        ("RATATOSKR__WATCH__BATCH", "101"),
+        ("RATATOSKR__WATCH__BATCH", "ten"),
+    ] {
+        let diagnostic = Config::from_environment([(key, value)])
+            .expect_err("an out-of-range watch value must be refused")
+            .to_string();
+        assert!(diagnostic.contains(key), "diagnostic must name the key");
+        assert!(
+            value.is_empty() || !diagnostic.contains(value),
+            "diagnostic echoed the value"
+        );
+    }
+    Ok(())
+}

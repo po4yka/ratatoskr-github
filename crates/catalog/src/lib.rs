@@ -49,6 +49,7 @@ pub use commands::{
 pub use config::{
     AdminConfig, ApiConfig, BusConfig, Config, ConfigError, CredentialsConfig, GithubOAuthConfig,
     InternalConfig, LegacyConfig, Limits, OAuthAppCredentials, ProviderConfig, StorageConfig,
+    WatchConfig,
 };
 pub use credentials::{
     CredentialError, CredentialKey, VerifiedGithubAccount, load_active_oauth, load_active_pat,
@@ -79,7 +80,8 @@ pub use mutations::{
     MutationStatus, RefusalReason, RepositoryRef, execute_batch, execute_mutation,
 };
 pub use observe::{
-    ObserveError, ObserveOutcome, ProviderAccess, observe_repository, record_fresh_repository,
+    ObserveError, ObserveOutcome, ProviderAccess, WatchedRepository, observe_repository,
+    record_fresh_repository, select_watched_repositories,
 };
 pub use snapshot::{FullSnapshotOutcome, SnapshotError, run_full_snapshot};
 pub use star_lists::{

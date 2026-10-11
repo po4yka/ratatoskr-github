@@ -25,6 +25,7 @@ use tokio::sync::watch;
 use tokio::task::JoinSet;
 
 use crate::Lifecycle;
+use crate::observer::WatchObserver;
 
 /// The events stream every GitHub subject lives on, except the Vault command.
 const EVENTS_STREAM: &str = "ratatoskr_events";
@@ -127,6 +128,7 @@ pub struct Bus {
     failed: PullConsumer,
     acknowledged: PullConsumer,
     connection_lost: watch::Receiver<bool>,
+    observer: Option<WatchObserver>,
 }
 
 impl Bus {
@@ -161,7 +163,16 @@ impl Bus {
             acknowledged: open_durable(&context, &POLICY_ACKNOWLEDGED).await?,
             context,
             connection_lost,
+            observer: None,
         })
+    }
+
+    /// Supervises the periodic watch observer beside the relay and the consumers. `None` (a
+    /// disabled interval) leaves the bus as it was.
+    #[must_use]
+    pub fn with_observer(mut self, observer: Option<WatchObserver>) -> Self {
+        self.observer = observer;
+        self
     }
 
     /// Runs the relay, the dispatch loops and the three consumers until `shutdown` is signalled.
@@ -184,9 +195,22 @@ impl Bus {
             failed,
             acknowledged,
             mut connection_lost,
+            observer,
         } = self;
         let mut tasks: JoinSet<Result<(), BusError>> = JoinSet::new();
         tasks.spawn(relay_loop(database.clone(), context, shutdown.clone()));
+        if let Some(observer) = observer {
+            // A pass makes provider calls that may each take the whole provider timeout, so it
+            // runs as its own supervised task and never delays the relay tick.
+            let database = database.clone();
+            let shutdown = shutdown.clone();
+            tasks.spawn(async move {
+                observer
+                    .run(database, shutdown)
+                    .await
+                    .map_err(|_| BusError::Catalog)
+            });
+        }
         tasks.spawn(consume(completed, shutdown.clone(), {
             let database = database.clone();
             move |bytes| {

@@ -13,6 +13,7 @@ use axum::response::Response;
 use axum::routing::get;
 
 pub mod bus;
+pub mod observer;
 mod readme_blobs;
 mod repository_action_attempts;
 mod repository_api;

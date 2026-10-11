@@ -5,8 +5,8 @@
 
 ## 2. Periodic observer for registered watches (R2-08 c)
 
-- [ ] 2.1 RED: add `services/catalog/tests/watch_observer.rs` and the watch configuration tests in `crates/catalog/tests/config.rs`; they fail because there is no observer and no key.
-- [ ] 2.2 GREEN: add `RATATOSKR__WATCH__{OBSERVE_INTERVAL_SECONDS,BATCH}`, the selection query and the observer pass in the supervised relay loop.
+- [x] 2.1 RED: add `services/catalog/tests/watch_observer.rs` and the watch configuration tests in `crates/catalog/tests/config.rs`; they fail because there is no observer and no key.
+- [x] 2.2 GREEN: add `RATATOSKR__WATCH__{OBSERVE_INTERVAL_SECONDS,BATCH}`, the selection query and the observer pass in the supervised relay loop.
 
 ## 3. Bounded provider calls (R2-08 d)
 

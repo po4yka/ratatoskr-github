@@ -18,6 +18,7 @@ use ratatoskr_github_catalog::{
     run_full_snapshot, run_star_list_snapshot,
 };
 use ratatoskr_github_catalog_service::bus::{Bus, BusError, BusSettings};
+use ratatoskr_github_catalog_service::observer::WatchObserver;
 use ratatoskr_github_catalog_service::{
     Lifecycle, OperatorCommand, OperatorCommandError, RepositoryApiState, admin_router,
     domain_router, parse_operator_command,
@@ -114,7 +115,7 @@ async fn run() -> Result<(), ProcessError> {
         OperatorCommand::CutoverReadiness { source_id } => {
             cutover_readiness(&config, &source_id).await
         }
-        OperatorCommand::Serve => serve(config).await,
+        OperatorCommand::Serve => Box::pin(serve(config)).await,
     }
 }
 
@@ -231,6 +232,7 @@ async fn serve(config: Config) -> Result<(), ProcessError> {
         .map_err(ProcessError::Bind)?;
     let provider = ReqwestGithubApi::for_base_url(&config.provider.base_url)
         .map_err(ProcessError::Provider)?;
+    let observer = WatchObserver::new(&config.watch, provider.clone());
     let mut repository_api = RepositoryApiState::new(
         database.clone(),
         provider,
@@ -239,7 +241,9 @@ async fn serve(config: Config) -> Result<(), ProcessError> {
     if let Some(secret) = config.internal.reader_service_secret() {
         repository_api = repository_api.with_reader_service_secret(secret.clone());
     }
-    let bus = connect_bus(&config).await?;
+    let bus = connect_bus(&config)
+        .await?
+        .map(|bus| bus.with_observer(observer));
     lifecycle.mark_ready();
     serve_listeners(
         admin_listener,

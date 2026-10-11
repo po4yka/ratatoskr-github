@@ -92,6 +92,59 @@ async fn stored_validators(
     Ok(stored.unwrap_or((None, None, None)))
 }
 
+/// A repository that has an enabled watch, with the `owner/name` alias to observe it under.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct WatchedRepository {
+    /// The internal repository identity.
+    pub repository_id: Uuid,
+    /// The current active `owner/name` alias.
+    pub alias: OwnerName,
+}
+
+/// Selects at most `batch` repositories that have an enabled watch and an active `owner/name`
+/// alias, the least recently observed first (XR-021 CONTRACTS.md R2-08 c).
+///
+/// # Errors
+///
+/// Returns [`crate::database::PersistenceError`] when the database refuses the query.
+pub async fn select_watched_repositories(
+    database: &Database,
+    batch: u32,
+) -> Result<Vec<WatchedRepository>, crate::database::PersistenceError> {
+    let rows: Vec<(Uuid, String)> = sqlx::query_as(
+        "select metadata.repository_id, alias.alias_value
+         from github_catalog.repository_metadata metadata
+         join lateral (
+             select alias_value from github_catalog.repository_aliases
+             where repository_id = metadata.repository_id
+               and alias_kind = 'owner_name' and status = 'active'
+             order by created_at desc limit 1
+         ) alias on true
+         where exists (
+             select 1 from github_catalog.repository_watches watch
+             where watch.repository_id = metadata.repository_id and watch.enabled)
+         order by metadata.fetched_at, metadata.repository_id
+         limit $1",
+    )
+    .bind(i64::from(batch))
+    .fetch_all(database.pool())
+    .await
+    .map_err(crate::database::PersistenceError::Query)?;
+    Ok(rows
+        .into_iter()
+        .filter_map(|(repository_id, alias)| {
+            let (owner, name) = alias.split_once('/')?;
+            Some(WatchedRepository {
+                repository_id,
+                alias: OwnerName {
+                    owner: owner.to_owned(),
+                    name: name.to_owned(),
+                },
+            })
+        })
+        .collect())
+}
+
 /// The provider side of one observation: the gateway, the shared budget, and the credential the
 /// requests carry (none for the unauthenticated observer).
 #[derive(Debug)]

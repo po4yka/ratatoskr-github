@@ -24,6 +24,8 @@ pub struct Config {
     pub bus: BusConfig,
     /// Service-to-service routes served on the domain listener.
     pub internal: InternalConfig,
+    /// Periodic observation of repositories that have an enabled watch.
+    pub watch: WatchConfig,
     /// Credential encryption configuration.
     pub credentials: CredentialsConfig,
     /// GitHub OAuth application configuration.
@@ -54,6 +56,20 @@ pub struct ProviderConfig {
     /// HTTPS provider origin, or a numeric loopback HTTP origin for tests.
     pub base_url: String,
 }
+
+/// The periodic observer of watched repositories (XR-021 CONTRACTS.md R2-08 c).
+#[derive(Debug, Clone, Serialize)]
+pub struct WatchConfig {
+    /// Seconds between observer passes; `0` disables the observer.
+    pub observe_interval_seconds: u32,
+    /// Most repositories one pass observes.
+    pub batch: u32,
+}
+
+/// Longest observer interval: one week.
+const MAX_OBSERVE_INTERVAL_SECONDS: u32 = 604_800;
+/// Most repositories one observer pass may observe.
+const MAX_WATCH_BATCH: u32 = 100;
 
 /// `PostgreSQL` storage locations owned by this service.
 #[derive(Clone, Serialize)]
@@ -497,6 +513,13 @@ fn apply_entry(config: &mut Config, key: &str, value: &str) -> Result<(), Config
             }
             config.internal.reader_service_secret = Some(SecretString::from(value.to_owned()));
         }
+        "RATATOSKR__WATCH__OBSERVE_INTERVAL_SECONDS" => {
+            config.watch.observe_interval_seconds =
+                parse_bounded(key, value, 0, MAX_OBSERVE_INTERVAL_SECONDS)?;
+        }
+        "RATATOSKR__WATCH__BATCH" => {
+            config.watch.batch = parse_bounded(key, value, 1, MAX_WATCH_BATCH)?;
+        }
         "RATATOSKR__CREDENTIALS__ENCRYPTION_KEY_HEX" => {
             config.credentials.encryption_key_hex = Some(value.to_owned());
         }
@@ -555,6 +578,14 @@ fn validate_provider_base_url(key: &str, value: &str) -> Result<(), ConfigError>
     }
 }
 
+fn parse_bounded(key: &str, value: &str, min: u32, max: u32) -> Result<u32, ConfigError> {
+    value
+        .parse::<u32>()
+        .ok()
+        .filter(|parsed| (min..=max).contains(parsed))
+        .ok_or_else(|| ConfigError::new(key, "must be an integer inside its documented range"))
+}
+
 fn parse_positive<T>(key: &str, value: &str) -> Result<T, ConfigError>
 where
     T: std::str::FromStr + Default + PartialOrd,
@@ -597,6 +628,10 @@ impl Default for Config {
             },
             internal: InternalConfig {
                 reader_service_secret: None,
+            },
+            watch: WatchConfig {
+                observe_interval_seconds: 3_600,
+                batch: 10,
             },
             credentials: CredentialsConfig {
                 encryption_key_hex: None,
