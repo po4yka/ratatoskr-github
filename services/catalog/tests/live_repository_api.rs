@@ -173,7 +173,8 @@ async fn real_service_serves_preview_and_partial_action_against_fake_provider()
         action["desired_backup"]["reason"],
         "policy_publication_failed"
     );
-    assert_eq!(provider_requests.len(), 4);
+    // preview GET, metadata GET, README GET and the two star mutation calls.
+    assert_eq!(provider_requests.len(), 5);
     assert!(
         provider_requests
             .iter()

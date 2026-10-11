@@ -97,20 +97,6 @@ async fn seed_events(
         )
         .await?,
     ];
-    sqlx::query(
-        "insert into github_catalog.repository_analysis_publications
-             (repository_id, source_digest, message_id, payload)
-         values ($1, $2, $3, $4)",
-    )
-    .bind(repository_id)
-    .bind(format!(
-        "{:0>64x}",
-        u128::from_be_bytes(Uuid::now_v7().into_bytes())
-    ))
-    .bind(Uuid::now_v7())
-    .bind(&bare)
-    .execute(database.database.pool())
-    .await?;
     Ok((outbox, inbox))
 }
 
@@ -180,12 +166,6 @@ async fn erasure_removes_every_owner_keyed_row_of_the_real_shapes() -> TestResul
             .fetch_all(database.database.pool())
             .await?;
     assert_eq!(remaining_attempts, vec![other.reference.clone()]);
-    let publications: Vec<String> = sqlx::query_scalar(
-        "select payload ->> 'owner' from github_catalog.repository_analysis_publications",
-    )
-    .fetch_all(database.database.pool())
-    .await?;
-    assert_eq!(publications, vec![other.reference.clone()]);
     assert_eq!(
         count(
             &database,

@@ -8,7 +8,7 @@ use uuid::Uuid;
 
 mod erasure_support;
 
-use erasure_support::{Owner, TestResult, attempt, count, erase, owner, repository, requested};
+use erasure_support::{Owner, TestResult, attempt, count, erase, owner, repository};
 
 const README_ONLY_R1: &str = "1111111111111111111111111111111111111111111111111111111111111111";
 const README_SHARED: &str = "2222222222222222222222222222222222222222222222222222222222222222";
@@ -135,34 +135,22 @@ async fn watch_and_request(
     Ok(())
 }
 
-async fn publication(
+async fn name_readme_in_request(
     database: &TestDatabase,
-    owner: &Owner,
     repository_id: Uuid,
-    numeric_id: u64,
     readme_digest: &str,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    let mut payload = serde_json::to_value(requested(owner, repository_id, numeric_id)?)?;
-    payload
-        .pointer_mut("/source_revision")
-        .and_then(serde_json::Value::as_object_mut)
-        .ok_or("the request has a source revision")?
-        .insert(
-            "readme".to_owned(),
-            json!({
-                "state": "present",
-                "content_ref": {"digest": {"algorithm": "sha256", "hex": readme_digest}}
-            }),
-        );
     sqlx::query(
-        "insert into github_catalog.repository_analysis_publications
-             (repository_id, source_digest, message_id, payload)
-         values ($1, $2, $3, $4)",
+        "update github_catalog.repository_analysis_requests set source_revision = $2
+         where repository_id = $1",
     )
     .bind(repository_id)
-    .bind(OPAQUE_DIGEST)
-    .bind(Uuid::now_v7())
-    .bind(payload)
+    .bind(json!({
+        "readme": {
+            "state": "present",
+            "content_ref": {"digest": {"algorithm": "sha256", "hex": readme_digest}}
+        }
+    }))
     .execute(database.database.pool())
     .await?;
     Ok(())
@@ -198,8 +186,8 @@ async fn repositories_only_the_erased_owner_referenced_are_collected_with_readme
     star(&database, &erased, r1).await?;
     watch_and_request(&database, &erased, r1, 952_001).await?;
     attempt(&database, &erased, 952_001, "track").await?;
-    // The publication names a digest that R2's metadata also references.
-    publication(&database, &erased, r1, 952_001, README_SHARED).await?;
+    // The request names a digest that R2's metadata also references.
+    name_readme_in_request(&database, r1, README_SHARED).await?;
     // R2 is starred by both owners; R3 is never touched by the erased owner.
     star(&database, &erased, r2).await?;
     star(&database, &other, r2).await?;
@@ -225,10 +213,6 @@ async fn repositories_only_the_erased_owner_referenced_are_collected_with_readme
             "select count(*) from github_catalog.repository_metadata_revisions where repository_id = $1",
         ),
         (
-            "publications",
-            "select count(*) from github_catalog.repository_analysis_publications where repository_id = $1",
-        ),
-        (
             "backup policy",
             "select count(*) from github_catalog.backup_policies where repository_id = $1",
         ),
@@ -238,15 +222,14 @@ async fn repositories_only_the_erased_owner_referenced_are_collected_with_readme
             0,
             "R1 {label} must be collected"
         );
-        let expected = i64::from(label != "publications");
         assert_eq!(
             present(&database, sql, r2).await?,
-            expected,
+            1,
             "R2 {label} must remain"
         );
         assert_eq!(
             present(&database, sql, r3).await?,
-            expected,
+            1,
             "R3 {label} must remain"
         );
     }
@@ -258,7 +241,7 @@ async fn repositories_only_the_erased_owner_referenced_are_collected_with_readme
     assert_eq!(
         remaining_readmes,
         vec![README_SHARED.to_owned(), README_R3.to_owned()],
-        "bytes only R1 referenced are gone; bytes R2 (also named by R1's publication) and R3 \
+        "bytes only R1 referenced are gone; bytes R2 (also named by R1's request) and R3 \
          reference remain"
     );
     let other_stars = count(

@@ -11,7 +11,7 @@ use ratatoskr_github_catalog::provider::{OwnerName, ProviderRepositoryBody, Reqw
 use ratatoskr_github_catalog::rate_limit::{RateLimitLedger, TokenRef};
 use ratatoskr_github_catalog::test_support::TestDatabase;
 use ratatoskr_github_catalog::{
-    AnalysisDispatch, TerminalFactOutcome, WatchEvaluation, apply_fresh_body,
+    AnalysisDispatch, TerminalFactOutcome, WatchBaseline, WatchEvaluation, apply_fresh_body,
     consume_repository_analysis_completed, dispatch_due_repository_analysis,
     evaluate_metadata_watches, observe_repository, register_repository_analysis_watch,
     repository_analysis_request_state,
@@ -49,6 +49,7 @@ async fn watch_registration_baselines_existing_metadata() -> Result<(), Box<dyn 
         &database.database,
         TenantRef::parse("user:018f0000-0000-7000-8000-000000000901")?,
         repository.repository_id,
+        WatchBaseline::Current,
     )
     .await?;
     let checkpoint: String = sqlx::query_scalar(
@@ -110,6 +111,7 @@ async fn metadata_delta_queues_and_dispatches_one_analysis_request()
         &database.database,
         analysis_owner,
         repository.repository_id,
+        WatchBaseline::Current,
     )
     .await?;
     observe_repository(
@@ -117,7 +119,6 @@ async fn metadata_delta_queues_and_dispatches_one_analysis_request()
         &gateway,
         &ledger,
         &token,
-        analysis_owner,
         &OwnerName {
             owner: "acme".to_owned(),
             name: "watched".to_owned(),
@@ -148,9 +149,8 @@ async fn metadata_delta_queues_and_dispatches_one_analysis_request()
     )
     .fetch_one(database.database.pool())
     .await?;
-    // The fresh source revision publishes immediately with README evidence;
-    // the separately registered watch retains its paced policy command.
-    assert_eq!(requested, 2);
+    // The watch is the only origin: the observed revision queued exactly one paced command.
+    assert_eq!(requested, 1);
 
     server.verify().await;
     database.cleanup().await?;
@@ -191,6 +191,7 @@ async fn matching_completion_resolves_the_pending_request_once()
         &database.database,
         TenantRef::parse("user:018f0000-0000-7000-8000-000000000903")?,
         repository.repository_id,
+        WatchBaseline::Current,
     )
     .await?;
     let changed = ProviderRepositoryBody {

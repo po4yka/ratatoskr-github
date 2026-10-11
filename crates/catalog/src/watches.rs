@@ -38,6 +38,16 @@ pub enum RepositoryAnalysisRequestStatus {
     Failed,
 }
 
+/// Where a newly registered watch starts counting changes from (XR-021 CONTRACTS.md R2-08 a).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum WatchBaseline {
+    /// The repository's current metadata revision is the checkpoint, so registration never
+    /// analyses old state.
+    Current,
+    /// No checkpoint is stored, so the first evaluation queues an analysis request.
+    Unevaluated,
+}
+
 /// The result of creating or re-enabling a metadata-delta watch.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct WatchRegistration {
@@ -121,30 +131,39 @@ impl From<EnvelopeBuildError> for WatchError {
 
 /// Registers or re-enables one user-owned metadata-delta analysis watch.
 ///
-/// The current metadata hash becomes the baseline so registration never analyses old state.
+/// The baseline decides whether registration analyses the current state.
 ///
 /// # Errors
 ///
-/// Returns [`WatchError`] when the repository has no metadata or persistence fails.
+/// Returns [`WatchError`] when a [`WatchBaseline::Current`] registration finds no metadata or
+/// persistence fails.
 pub async fn register_repository_analysis_watch(
     database: &Database,
     owner: TenantRef,
     repository_id: Uuid,
+    baseline: WatchBaseline,
 ) -> Result<WatchRegistration, WatchError> {
     let mut tx = database
         .pool()
         .begin()
         .await
         .map_err(PersistenceError::Query)?;
-    let baseline: String = sqlx::query_scalar(
-        "select content_hash from github_catalog.repository_metadata
-         where repository_id = $1 for update",
-    )
-    .bind(repository_id)
-    .fetch_optional(&mut *tx)
-    .await
-    .map_err(PersistenceError::Query)?
-    .ok_or(WatchError::MissingMetadata)?;
+    let checkpoint: Option<String> = match baseline {
+        WatchBaseline::Current => Some(
+            sqlx::query_scalar(
+                "select content_hash from github_catalog.repository_metadata
+                 where repository_id = $1 for update",
+            )
+            .bind(repository_id)
+            .fetch_optional(&mut *tx)
+            .await
+            .map_err(PersistenceError::Query)?
+            .ok_or(WatchError::MissingMetadata)?,
+        ),
+        WatchBaseline::Unevaluated => None,
+    };
+    // An unevaluated registration keeps the checkpoint of a watch that already has one, so a
+    // repeated track never discards what the watch has evaluated.
     let watch_id: Uuid = sqlx::query_scalar(
         "insert into github_catalog.repository_watches
              (watch_id, owner_ref, repository_id, trigger_type, downstream_action,
@@ -152,14 +171,16 @@ pub async fn register_repository_analysis_watch(
          values ($1, $2, $3, 'metadata_changed', 'repository_analysis', true, $4)
          on conflict (owner_ref, repository_id, trigger_type, downstream_action) do update set
              enabled = true,
-             last_evaluated_content_hash = excluded.last_evaluated_content_hash,
+             last_evaluated_content_hash = coalesce(
+                 excluded.last_evaluated_content_hash,
+                 github_catalog.repository_watches.last_evaluated_content_hash),
              updated_at = now()
          returning watch_id",
     )
     .bind(Uuid::now_v7())
     .bind(owner.to_string())
     .bind(repository_id)
-    .bind(baseline)
+    .bind(checkpoint)
     .fetch_one(&mut *tx)
     .await
     .map_err(PersistenceError::Query)?;
@@ -208,12 +229,6 @@ pub async fn evaluate_metadata_watches(
 ) -> Result<WatchEvaluation, WatchError> {
     let attributes = analysis_attributes(body)?;
     let attributes_digest = digest_value(&attributes)?;
-    let source_revision = RepositoryAnalysisRevision {
-        attributes_digest: attributes_digest.clone(),
-        readme: ReadmeRevision::Absent {
-            reason: ReadmeAbsenceReason::NotPreserved,
-        },
-    };
     let repository = RepositoryId::parse(&repository_id.to_string())
         .map_err(|_| WatchError::InvalidStoredIdentity)?;
     let provider_id =
@@ -223,14 +238,19 @@ pub async fn evaluate_metadata_watches(
         .begin()
         .await
         .map_err(PersistenceError::Query)?;
-    let metadata_hash: String = sqlx::query_scalar(
-        "select content_hash from github_catalog.repository_metadata where repository_id = $1",
+    let (metadata_hash, stored_readme): (String, Option<serde_json::Value>) = sqlx::query_as(
+        "select content_hash, readme_revision from github_catalog.repository_metadata
+         where repository_id = $1",
     )
     .bind(repository_id)
     .fetch_optional(&mut *tx)
     .await
     .map_err(PersistenceError::Query)?
     .ok_or(WatchError::MissingMetadata)?;
+    let source_revision = RepositoryAnalysisRevision {
+        attributes_digest: attributes_digest.clone(),
+        readme: stored_readme_revision(stored_readme)?,
+    };
     let watches: Vec<(Uuid, String)> = sqlx::query_as(
         "select watch_id, owner_ref from github_catalog.repository_watches
          where repository_id = $1 and enabled
@@ -279,7 +299,7 @@ pub async fn evaluate_metadata_watches(
                   source_revision, repository_attributes, request_payload, attributes_digest_hex,
                   idempotency_digest_hex, requested_contract, not_before)
              values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, 'repository_analysis', $11)
-             on conflict (watch_id, attributes_digest_hex, requested_contract) do nothing
+             on conflict (watch_id, idempotency_digest_hex, requested_contract) do nothing
              returning request_id",
         )
         .bind(
@@ -481,6 +501,18 @@ pub async fn repository_analysis_request_state(
         })
     })
     .transpose()
+}
+
+/// The README evidence the stored projection names. A projection written without README evidence
+/// (the body-only primitive `apply_fresh_body`) honestly reports that no README was preserved;
+/// the service paths always store the revision they fetched.
+fn stored_readme_revision(stored: Option<serde_json::Value>) -> Result<ReadmeRevision, WatchError> {
+    match stored {
+        Some(value) => serde_json::from_value(value).map_err(|_| WatchError::InvalidStoredIdentity),
+        None => Ok(ReadmeRevision::Absent {
+            reason: ReadmeAbsenceReason::NotPreserved,
+        }),
+    }
 }
 
 fn analysis_attributes(

@@ -20,6 +20,7 @@ use ratatoskr_identifiers::{EntityRef, Extensions};
 use tokio::sync::watch;
 use uuid::Uuid;
 
+mod action_support;
 mod bus_support;
 use bus_support::{
     ACKNOWLEDGED_DURABLE, ACKNOWLEDGED_SUBJECT, APPLY_SUBJECT, BROKER, COMMANDS_STREAM,
@@ -410,5 +411,63 @@ async fn a_lost_broker_connection_marks_the_service_not_ready_and_ends_with_an_e
         "readiness must be false once the bus is gone"
     );
     database.cleanup().await?;
+    Ok(())
+}
+
+#[tokio::test]
+async fn a_tracked_repository_publishes_one_requested_event() -> TestResult {
+    let _broker = BROKER.lock().await;
+    let url = broker_url();
+    let client = async_nats::connect(&url).await?;
+    let context = provision(&client, &GITHUB_DURABLES).await?;
+    let harness = action_support::Harness::start(Some(action_support::README_TEXT)).await?;
+    let (status, answer) = harness
+        .act(
+            action_support::FIRST_USER,
+            &action_support::action_request(
+                "track",
+                "bus-track.018f0000-0000-7000-8000-000000000c01",
+            ),
+        )
+        .await?;
+    assert_eq!(status, 200, "track answer: {answer}");
+
+    let running = start(&url, &harness.database).await?;
+    eventually("the tracked request to be relayed", || async {
+        let published: i64 = sqlx::query_scalar(
+            "select count(*) from github_catalog.outbox_events
+             where subject = $1 and published_at is not null",
+        )
+        .bind(REQUESTED_SUBJECT)
+        .fetch_one(harness.database.database.pool())
+        .await?;
+        Ok::<_, Box<dyn std::error::Error>>((published > 0).then_some(()))
+    })
+    .await?;
+    // A second dispatch tick must not produce a second event for the same track.
+    tokio::time::sleep(Duration::from_millis(2_500)).await;
+    running.stop().await?;
+
+    assert_eq!(stream_messages(&context, EVENTS_STREAM).await?, 1);
+    let message = context
+        .get_stream(EVENTS_STREAM)
+        .await?
+        .get_last_raw_message_by_subject(REQUESTED_SUBJECT)
+        .await?;
+    let envelope = EventEnvelope::from_json(&message.payload)?;
+    let requested: ratatoskr_github_contracts::RepositoryAnalysisRequested =
+        envelope.payload_as()?;
+    assert_eq!(
+        requested.owner.to_string(),
+        format!("user:{}", action_support::FIRST_USER)
+    );
+    assert!(
+        matches!(
+            requested.source_revision.readme,
+            ratatoskr_github_contracts::ReadmeRevision::Present { .. }
+        ),
+        "the published request carries the README reference"
+    );
+    harness.database.cleanup().await?;
     Ok(())
 }

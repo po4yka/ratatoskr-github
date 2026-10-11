@@ -11,11 +11,14 @@ use ratatoskr_github_contracts::{ReadmeAbsenceReason, ReadmeRevision};
 use ratatoskr_identifiers::TenantRef;
 
 use crate::metadata::{
-    ReadmeBlobError, RepositoryAnalysisSource, apply_fresh_source, apply_not_modified, store_readme,
+    AppliedOutcome, ReadmeBlobError, RepositoryAnalysisSource, RepositorySourceError,
+    apply_fresh_source, apply_not_modified, store_readme,
 };
-use crate::provider::{OwnerName, ReadmeFetchOutcome};
+use crate::provider::{FreshRepository, GithubApi, OwnerName, ReadmeFetchOutcome};
 use crate::rate_limit::{AcquireError, RateLimitHeaders, RateLimitLedger, TokenRef};
-use crate::watches::{WatchError, evaluate_metadata_watches};
+use crate::watches::{
+    WatchBaseline, WatchError, evaluate_metadata_watches, register_repository_analysis_watch,
+};
 
 /// What one observe operation established.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -62,9 +65,9 @@ pub enum ObserveError {
     /// README evidence could not be preserved before the source revision was committed.
     #[error(transparent)]
     ReadmeBlob(#[from] ReadmeBlobError),
-    /// The source could not be represented by the published analysis request contract.
+    /// The source revision could not be represented or committed.
     #[error(transparent)]
-    AnalysisPublication(#[from] crate::metadata::RepositoryAnalysisPublicationError),
+    Source(#[from] RepositorySourceError),
     /// A not-modified answer arrived for a repository the catalog does not
     /// hold a validator for.
     #[error("a not-modified response arrived without catalog state")]
@@ -89,10 +92,112 @@ async fn stored_validators(
     Ok(stored.unwrap_or((None, None, None)))
 }
 
-/// Observes the repository `alias` names: enforces the token budget, fetches
-/// conditionally, applies rename evidence when present, and records fresh
-/// bodies into the projection and revision history. `now` is the instant metadata
-/// watches are evaluated at, so an analysis request it queues is due from `now`.
+/// The provider side of one observation: the gateway, the shared budget, and the credential the
+/// requests carry (none for the unauthenticated observer).
+#[derive(Debug)]
+pub struct ProviderAccess<'a, G> {
+    /// The provider gateway every request goes through.
+    pub gateway: &'a G,
+    /// The shared rate-limit ledger that gates and learns from each response.
+    pub ledger: &'a RateLimitLedger,
+    /// The non-secret budget label of the credential.
+    pub token: &'a TokenRef,
+    /// The bearer credential, or `None` for unauthenticated access.
+    pub credential: Option<&'a str>,
+}
+
+/// Records one fresh repository body as the immutable source revision it is: fetches the README
+/// through the same gateway and ledger, preserves its bytes, applies the metadata and README
+/// evidence, optionally registers an unevaluated analysis watch for the tracking user, and
+/// evaluates every enabled watch so a changed repository queues a request for each owner.
+///
+/// This is the one function the action route and the periodic observer share (XR-021
+/// CONTRACTS.md R2-08 b). `now` is the instant the evaluation is made at, so a request it queues
+/// is due from `now`.
+///
+/// # Errors
+///
+/// Returns [`ObserveError`] for provider, persistence, or watch failures.
+pub async fn record_fresh_repository<G>(
+    database: &Database,
+    access: &ProviderAccess<'_, G>,
+    repository_id: Uuid,
+    alias: &OwnerName,
+    fresh: &FreshRepository,
+    track_for: Option<TenantRef>,
+    now: time::OffsetDateTime,
+) -> Result<AppliedOutcome, ObserveError>
+where
+    G: GithubApi,
+{
+    let (_, stored_readme_etag, stored_readme_revision) =
+        stored_validators(database, repository_id).await?;
+    let readme_reply = access
+        .gateway
+        .fetch_readme(
+            access.credential,
+            &alias.owner,
+            &alias.name,
+            stored_readme_etag.as_deref(),
+        )
+        .await?;
+    access
+        .ledger
+        .observe(access.token, &readme_reply.rate_limit);
+    let (readme, readme_etag) = match readme_reply.outcome {
+        ReadmeFetchOutcome::Fresh(fresh_readme) => (
+            ReadmeRevision::Present {
+                content_ref: store_readme(database, &fresh_readme.bytes).await?,
+            },
+            fresh_readme.etag,
+        ),
+        ReadmeFetchOutcome::NotModified => (
+            serde_json::from_value(
+                stored_readme_revision.ok_or(ObserveError::MissingRepositoryState)?,
+            )
+            .map_err(|_| ObserveError::MissingRepositoryState)?,
+            stored_readme_etag,
+        ),
+        ReadmeFetchOutcome::NotFound => (
+            ReadmeRevision::Absent {
+                reason: ReadmeAbsenceReason::NotFound,
+            },
+            None,
+        ),
+        ReadmeFetchOutcome::NotAuthorized => (
+            ReadmeRevision::Absent {
+                reason: ReadmeAbsenceReason::NotAuthorized,
+            },
+            None,
+        ),
+    };
+    let applied = apply_fresh_source(
+        database,
+        repository_id,
+        &fresh.body,
+        fresh.etag.as_deref(),
+        &RepositoryAnalysisSource {
+            readme,
+            readme_etag,
+        },
+    )
+    .await?;
+    if let Some(owner) = track_for {
+        register_repository_analysis_watch(
+            database,
+            owner,
+            repository_id,
+            WatchBaseline::Unevaluated,
+        )
+        .await?;
+    }
+    evaluate_metadata_watches(database, repository_id, &fresh.body, now).await?;
+    Ok(applied)
+}
+
+/// Observes the repository `alias` names with unauthenticated access: enforces the token budget,
+/// fetches conditionally, applies rename evidence when present, and records fresh bodies through
+/// [`record_fresh_repository`]. `now` is the instant metadata watches are evaluated at.
 ///
 /// # Errors
 ///
@@ -102,12 +207,11 @@ pub async fn observe_repository<G>(
     gateway: &G,
     ledger: &RateLimitLedger,
     token: &TokenRef,
-    analysis_owner: TenantRef,
     alias: &OwnerName,
     now: time::OffsetDateTime,
 ) -> Result<ObserveOutcome, ObserveError>
 where
-    G: crate::provider::GithubApi,
+    G: GithubApi,
 {
     // Budget first: a withheld operation touches nothing else.
     if let Err(AcquireError::RateLimited { retry_at }) = ledger.acquire(token) {
@@ -116,9 +220,9 @@ where
 
     let requested_value = alias.to_string();
     let known_repository = resolve_alias(database, AliasKind::OwnerName, &requested_value).await?;
-    let (stored_etag, stored_readme_etag, stored_readme_revision) = match known_repository {
-        Some(repository_id) => stored_validators(database, repository_id).await?,
-        None => (None, None, None),
+    let stored_etag = match known_repository {
+        Some(repository_id) => stored_validators(database, repository_id).await?.0,
+        None => None,
     };
 
     let reply = gateway
@@ -145,55 +249,22 @@ where
                     .unwrap_or(requested_value.as_str()),
             )
             .await?;
-            let readme_reply = gateway
-                .fetch_readme(
-                    None,
-                    &alias.owner,
-                    &alias.name,
-                    stored_readme_etag.as_deref(),
-                )
-                .await?;
-            ledger.observe(token, &readme_reply.rate_limit);
-            let (readme, readme_etag) = match readme_reply.outcome {
-                ReadmeFetchOutcome::Fresh(fresh_readme) => (
-                    ReadmeRevision::Present {
-                        content_ref: store_readme(database, &fresh_readme.bytes).await?,
-                    },
-                    fresh_readme.etag,
-                ),
-                ReadmeFetchOutcome::NotModified => (
-                    serde_json::from_value(
-                        stored_readme_revision.ok_or(ObserveError::MissingRepositoryState)?,
-                    )
-                    .map_err(|_| ObserveError::MissingRepositoryState)?,
-                    stored_readme_etag,
-                ),
-                ReadmeFetchOutcome::NotFound => (
-                    ReadmeRevision::Absent {
-                        reason: ReadmeAbsenceReason::NotFound,
-                    },
-                    None,
-                ),
-                ReadmeFetchOutcome::NotAuthorized => (
-                    ReadmeRevision::Absent {
-                        reason: ReadmeAbsenceReason::NotAuthorized,
-                    },
-                    None,
-                ),
+            let access = ProviderAccess {
+                gateway,
+                ledger,
+                token,
+                credential: None,
             };
-            apply_fresh_source(
+            record_fresh_repository(
                 database,
+                &access,
                 identity.repository_id,
-                &fresh.body,
-                fresh.etag.as_deref(),
-                &RepositoryAnalysisSource {
-                    owner: analysis_owner,
-                    readme,
-                    readme_etag,
-                },
+                alias,
+                &fresh,
+                None,
+                now,
             )
             .await?;
-            evaluate_metadata_watches(database, identity.repository_id, &fresh.body, now).await?;
             Ok(ObserveOutcome::Observed {
                 repository_id: identity.repository_id,
             })

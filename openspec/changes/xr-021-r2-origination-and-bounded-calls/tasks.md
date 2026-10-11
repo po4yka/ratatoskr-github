@@ -1,7 +1,7 @@
 ## 1. A track action originates the first analysis request (R2-08 a and b)
 
-- [ ] 1.1 RED: add `crates/catalog/tests/watches.rs::an_unevaluated_baseline_queues_the_first_analysis`, `services/catalog/tests/repository_api.rs::track_queues_one_analysis_request_with_the_readme` and `services/catalog/tests/bus.rs::a_tracked_repository_publishes_one_requested_event`; they fail on the missing request, the missing README and the missing event (a signature-only `WatchBaseline` stub precedes them so the failure is an assertion).
-- [ ] 1.2 GREEN: add `WatchBaseline`, factor `observe::record_fresh_repository`, call it from `execute_catalog_action`, register an `Unevaluated` watch on `track`, remove the direct publication and `repository_analysis_publications`, and stop producing `not_preserved` at runtime.
+- [x] 1.1 RED: add `crates/catalog/tests/watches.rs::an_unevaluated_baseline_queues_the_first_analysis`, `services/catalog/tests/repository_api.rs::track_queues_one_analysis_request_with_the_readme` and `services/catalog/tests/bus.rs::a_tracked_repository_publishes_one_requested_event`; they fail on the missing request, the missing README and the missing event (a signature-only `WatchBaseline` stub precedes them so the failure is an assertion).
+- [x] 1.2 GREEN: add `WatchBaseline`, factor `observe::record_fresh_repository`, call it from `execute_catalog_action`, register an `Unevaluated` watch on `track`, remove the direct publication and `repository_analysis_publications`, and stop producing `not_preserved` at runtime.
 
 ## 2. Periodic observer for registered watches (R2-08 c)
 

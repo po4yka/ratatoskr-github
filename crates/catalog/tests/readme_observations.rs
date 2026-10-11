@@ -12,7 +12,7 @@ use ratatoskr_github_catalog::{
     AppliedOutcome, RepositoryAnalysisSource, apply_fresh_source, store_readme, upsert_repository,
 };
 use ratatoskr_github_contracts::ReadmeRevision;
-use ratatoskr_identifiers::{DigestAlgorithm, TenantRef};
+use ratatoskr_identifiers::DigestAlgorithm;
 
 /// README bytes must have their own content-addressed durable boundary before an analysis event
 /// may carry only a `BlobRef` to them.
@@ -53,16 +53,15 @@ async fn equal_readme_bytes_converge_on_one_sha256_blob_reference()
     Ok(())
 }
 
-/// The source revision and typed request are committed together and replays cannot create a
-/// second command or spendable source revision.
+/// A replay of the same source revision converges, and recording a source revision queues nothing
+/// by itself.
 #[tokio::test]
-async fn source_revision_creates_one_contract_valid_analysis_outbox_command()
+async fn an_equal_source_revision_converges_and_queues_no_request()
 -> Result<(), Box<dyn std::error::Error>> {
     let database = TestDatabase::create().await?;
     let repository = upsert_repository(&database.database, 300_000_401).await?;
     let readme = store_readme(&database.database, b"# Widget\n").await?;
     let source = RepositoryAnalysisSource {
-        owner: TenantRef::parse("user:018f0000-0000-7000-8000-000000000005")?,
         readme: ReadmeRevision::Present {
             content_ref: readme,
         },
@@ -100,23 +99,20 @@ async fn source_revision_creates_one_contract_valid_analysis_outbox_command()
         .await?,
         AppliedOutcome::Unchanged
     );
-    let payload: serde_json::Value = sqlx::query_scalar(
-        "select payload from github_catalog.outbox_events where subject = 'evt.knowledge.repository_analysis.requested.v1'",
+    let revisions: i64 = sqlx::query_scalar(
+        "select count(*) from github_catalog.repository_metadata_revisions where repository_id = $1",
+    )
+    .bind(repository.repository_id)
+    .fetch_one(database.database.pool())
+    .await?;
+    assert_eq!(revisions, 1, "a replay appends no second revision");
+    let queued: i64 = sqlx::query_scalar(
+        "select (select count(*) from github_catalog.outbox_events)
+              + (select count(*) from github_catalog.repository_analysis_requests)",
     )
     .fetch_one(database.database.pool())
     .await?;
-    let request: ratatoskr_github_contracts::RepositoryAnalysisRequested =
-        ratatoskr_event_envelope::EventEnvelope::from_json(payload.to_string().as_bytes())?
-            .payload_as()?;
-    assert_eq!(
-        request.repository_id.to_string(),
-        repository.repository_id.to_string()
-    );
-    let publications: i64 =
-        sqlx::query_scalar("select count(*) from github_catalog.repository_analysis_publications")
-            .fetch_one(database.database.pool())
-            .await?;
-    assert_eq!(publications, 1);
+    assert_eq!(queued, 0, "only a watch originates an analysis request");
     database.cleanup().await?;
     Ok(())
 }

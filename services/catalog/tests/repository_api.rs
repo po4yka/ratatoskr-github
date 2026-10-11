@@ -372,8 +372,8 @@ async fn metadata_and_track_never_call_provider_star() -> Result<(), Box<dyn std
     assert!(dirty_generation > 0);
     assert_eq!(
         provider_requests.len(),
-        2,
-        "each action needs one metadata GET"
+        4,
+        "each action needs one metadata GET and one README GET"
     );
     assert!(
         provider_requests
@@ -499,7 +499,8 @@ async fn provider_star_success_survives_later_persistence_failure_without_unstar
         result["desired_backup"]["reason"],
         "policy_publication_failed"
     );
-    assert_eq!(provider_requests.len(), 3);
+    // metadata GET, README GET and the two star mutation calls.
+    assert_eq!(provider_requests.len(), 4);
     for request in provider_requests {
         let body = String::from_utf8_lossy(&request.body);
         assert!(
@@ -622,7 +623,8 @@ async fn provider_refusal_skips_dependent_policy_without_fabricated_success()
         dirty_generation, 0,
         "provider failure accepted backup policy"
     );
-    assert_eq!(provider_requests.len(), 3);
+    // metadata GET, README GET and the provider calls of the refused star.
+    assert_eq!(provider_requests.len(), 4);
     Ok(())
 }
 
@@ -741,8 +743,8 @@ async fn exact_action_replay_returns_recorded_truth_and_conflicting_reuse_is_ref
     assert_eq!(conflict_body["code"], "github.action.idempotency_conflict");
     assert_eq!(
         provider_requests.len(),
-        3,
-        "replay or conflict repeated provider work"
+        4,
+        "replay or conflict repeated provider work (metadata GET, README GET, star calls)"
     );
     Ok(())
 }

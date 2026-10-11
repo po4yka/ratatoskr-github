@@ -9,19 +9,14 @@ use sha2::{Digest as _, Sha256};
 use uuid::Uuid;
 
 use ratatoskr_github_contracts::{
-    ReadmeRevision, RepositoryAnalysisAttributes, RepositoryAnalysisContract,
-    RepositoryAnalysisRequested, RepositoryAnalysisRevision, RepositoryDescription,
-    RepositoryFullName, RepositoryLanguage,
+    ReadmeRevision, RepositoryAnalysisAttributes, RepositoryDescription, RepositoryFullName,
+    RepositoryLanguage,
 };
 use ratatoskr_identifiers::{
     BlobOwner, BlobRef, ContentDigest, DigestAlgorithm, DigestHex, MediaType,
-    RepositoryAnalysisRequestId, RepositoryId, TenantRef,
 };
 
 use crate::database::{Database, PersistenceError};
-use crate::envelopes::{
-    ANALYSIS_REQUESTED_SUBJECT, EnvelopeBuildError, analysis_requested_envelope,
-};
 use crate::provider::ProviderRepositoryBody;
 
 /// How many most recent revisions stay retained per repository.
@@ -40,21 +35,19 @@ pub enum AppliedOutcome {
     Unchanged,
 }
 
-/// Immutable source input admitted to repository analysis.
+/// Immutable source input a repository revision is recorded with.
 #[derive(Debug, Clone)]
 pub struct RepositoryAnalysisSource {
-    /// Tenant authorized to analyse this repository revision.
-    pub owner: TenantRef,
     /// Immutable README state, with bytes represented only by a stored `BlobRef`.
     pub readme: ReadmeRevision,
     /// README conditional validator retained with this source revision.
     pub readme_etag: Option<String>,
 }
 
-/// Failure while constructing a published repository-analysis command.
+/// Failure while recording an immutable repository source revision.
 #[derive(Debug, thiserror::Error)]
 #[non_exhaustive]
-pub enum RepositoryAnalysisPublicationError {
+pub enum RepositorySourceError {
     /// Catalog-owned persistence failed.
     #[error(transparent)]
     Persistence(#[from] PersistenceError),
@@ -62,20 +55,8 @@ pub enum RepositoryAnalysisPublicationError {
     #[error("repository metadata violates the published analysis contract")]
     Contract,
     /// A JSON contract value could not be encoded for durable storage.
-    #[error("the repository-analysis command could not be encoded")]
+    #[error("the repository source revision could not be encoded")]
     Encode(#[source] serde_json::Error),
-    /// The numeric GitHub repository identity cannot be represented by the contract.
-    #[error("the GitHub repository identity is outside the published contract range")]
-    NumericIdentity,
-}
-
-impl From<EnvelopeBuildError> for RepositoryAnalysisPublicationError {
-    fn from(error: EnvelopeBuildError) -> Self {
-        match error {
-            EnvelopeBuildError::Identity => Self::Contract,
-            EnvelopeBuildError::Encode(source) => Self::Encode(source),
-        }
-    }
 }
 
 /// Failure while preserving bounded README bytes into the Catalog-owned blob boundary.
@@ -228,29 +209,28 @@ pub async fn apply_fresh_body(
     }
 }
 
-/// Applies one complete immutable source revision and atomically appends its analysis command.
+/// Applies one complete immutable source revision: the metadata projection, its README evidence
+/// and one raw history revision.
 ///
 /// Unlike [`apply_fresh_body`], this path includes README evidence in the SHA-256 source identity.
-/// Replays of an equal metadata/README pair converge without a second revision or outbox row.
+/// Replays of an equal metadata/README pair converge without a second revision. It queues no
+/// analysis request: requests originate only from watches, which the caller evaluates afterwards
+/// with `evaluate_metadata_watches`.
 ///
 /// # Errors
 ///
-/// Returns [`RepositoryAnalysisPublicationError`] when the source cannot be represented or
-/// durable state cannot be committed.
-#[allow(
-    clippy::too_many_lines,
-    reason = "one transaction keeps repository metadata, immutable source revision, and outbox command atomic"
-)]
+/// Returns [`RepositorySourceError`] when the source cannot be represented or durable state cannot
+/// be committed.
 pub async fn apply_fresh_source(
     database: &Database,
     repository_id: Uuid,
     body: &ProviderRepositoryBody,
     etag: Option<&str>,
     source: &RepositoryAnalysisSource,
-) -> Result<AppliedOutcome, RepositoryAnalysisPublicationError> {
+) -> Result<AppliedOutcome, RepositorySourceError> {
     let attributes = repository_attributes(body)?;
     let attributes_value =
-        serde_json::to_value(&attributes).map_err(RepositoryAnalysisPublicationError::Encode)?;
+        serde_json::to_value(&attributes).map_err(RepositorySourceError::Encode)?;
     let attributes_digest = content_digest(&attributes_value)?;
     let source_value = serde_json::json!({
         "attributes_digest": attributes_digest,
@@ -290,8 +270,7 @@ pub async fn apply_fresh_source(
         body,
         etag,
         source.readme_etag.as_deref(),
-        &serde_json::to_value(&source.readme)
-            .map_err(RepositoryAnalysisPublicationError::Encode)?,
+        &serde_json::to_value(&source.readme).map_err(RepositorySourceError::Encode)?,
         source_digest.hex.as_str(),
     )
     .await?;
@@ -304,57 +283,6 @@ pub async fn apply_fresh_source(
     .bind(repository_id)
     .bind(raw_payload)
     .bind(source_digest.hex.as_str())
-    .execute(&mut *transaction)
-    .await
-    .map_err(PersistenceError::Query)?;
-
-    let request = RepositoryAnalysisRequested {
-        owner: source.owner,
-        repository_id: RepositoryId::parse(&repository_id.to_string())
-            .map_err(|_| RepositoryAnalysisPublicationError::Contract)?,
-        github_repository_numeric_id: u64::try_from(body.provider_repository_id)
-            .map_err(|_| RepositoryAnalysisPublicationError::NumericIdentity)?,
-        request_id: RepositoryAnalysisRequestId::new_v7(),
-        source_revision: RepositoryAnalysisRevision {
-            attributes_digest,
-            readme: source.readme.clone(),
-        },
-        repository_attributes: attributes,
-        requested_contract: RepositoryAnalysisContract::RepositoryAnalysis,
-        idempotency_key: source_digest.clone(),
-        extensions: ratatoskr_identifiers::Extensions::new(),
-    };
-    let payload =
-        serde_json::to_value(&request).map_err(RepositoryAnalysisPublicationError::Encode)?;
-    let message_id = Uuid::now_v7();
-    let inserted = sqlx::query(
-        "insert into github_catalog.repository_analysis_publications
-             (repository_id, source_digest, message_id, payload)
-         values ($1, $2, $3, $4)
-         on conflict (repository_id, source_digest) do nothing",
-    )
-    .bind(repository_id)
-    .bind(source_digest.hex.as_str())
-    .bind(message_id)
-    .bind(&payload)
-    .execute(&mut *transaction)
-    .await
-    .map_err(PersistenceError::Query)?;
-    if inserted.rows_affected() != 1 {
-        return Err(RepositoryAnalysisPublicationError::Persistence(
-            PersistenceError::Query(sqlx::Error::Protocol(
-                "repository source publication identity diverged".to_owned(),
-            )),
-        ));
-    }
-    let envelope = analysis_requested_envelope(message_id, &request)?;
-    sqlx::query(
-        "insert into github_catalog.outbox_events (message_id, subject, payload)
-         values ($1, $2, $3)",
-    )
-    .bind(message_id)
-    .bind(ANALYSIS_REQUESTED_SUBJECT)
-    .bind(envelope)
     .execute(&mut *transaction)
     .await
     .map_err(PersistenceError::Query)?;
@@ -372,36 +300,35 @@ pub async fn apply_fresh_source(
 
 fn repository_attributes(
     body: &ProviderRepositoryBody,
-) -> Result<RepositoryAnalysisAttributes, RepositoryAnalysisPublicationError> {
+) -> Result<RepositoryAnalysisAttributes, RepositorySourceError> {
     let description = body
         .description
         .as_deref()
         .filter(|value| !value.is_empty())
         .map(RepositoryDescription::parse)
         .transpose()
-        .map_err(|_| RepositoryAnalysisPublicationError::Contract)?;
+        .map_err(|_| RepositorySourceError::Contract)?;
     let primary_language = body
         .language
         .as_deref()
         .filter(|value| !value.is_empty())
         .map(RepositoryLanguage::parse)
         .transpose()
-        .map_err(|_| RepositoryAnalysisPublicationError::Contract)?;
+        .map_err(|_| RepositorySourceError::Contract)?;
     Ok(RepositoryAnalysisAttributes {
         repository_full_name: RepositoryFullName::parse(&body.full_name)
-            .map_err(|_| RepositoryAnalysisPublicationError::Contract)?,
+            .map_err(|_| RepositorySourceError::Contract)?,
         description,
         primary_language,
     })
 }
 
-fn content_digest(value: &Value) -> Result<ContentDigest, RepositoryAnalysisPublicationError> {
-    let serialized =
-        serde_json::to_vec(value).map_err(RepositoryAnalysisPublicationError::Encode)?;
+fn content_digest(value: &Value) -> Result<ContentDigest, RepositorySourceError> {
+    let serialized = serde_json::to_vec(value).map_err(RepositorySourceError::Encode)?;
     let hex = sha256_hex(&Sha256::digest(serialized));
     Ok(ContentDigest {
         algorithm: DigestAlgorithm::Sha256,
-        hex: DigestHex::parse(&hex).map_err(|_| RepositoryAnalysisPublicationError::Contract)?,
+        hex: DigestHex::parse(&hex).map_err(|_| RepositorySourceError::Contract)?,
     })
 }
 

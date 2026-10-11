@@ -199,21 +199,6 @@ create table if not exists github_catalog.repository_readme_blobs (
         check (media_type = 'text/markdown')
 );
 
--- One immutable analysis command per combined metadata and README input.  The unique source
--- digest is the outbox replay boundary; the command payload is retained verbatim for recovery.
-create table if not exists github_catalog.repository_analysis_publications (
-    repository_id uuid not null references github_catalog.repositories (repository_id),
-    source_digest text not null,
-    message_id uuid not null unique,
-    payload jsonb not null,
-    created_at timestamptz not null default now(),
-    primary key (repository_id, source_digest),
-    constraint repository_analysis_publications_digest_check
-        check (source_digest ~ '^[0-9a-f]{64}$'),
-    constraint repository_analysis_publications_payload_object_check
-        check (jsonb_typeof(payload) = 'object')
-);
-
 create table if not exists github_catalog.sync_runs (
     sync_run_id    uuid primary key,
     account_id     uuid not null references github_catalog.github_accounts (account_id),
@@ -414,7 +399,8 @@ create table if not exists github_catalog.repository_watches (
     trigger_type                  text not null,
     downstream_action             text not null,
     enabled                       boolean not null default true,
-    last_evaluated_content_hash   text not null,
+    -- Null means the watch has never been evaluated, so its first evaluation queues a request.
+    last_evaluated_content_hash   text,
     created_at                    timestamptz not null default now(),
     updated_at                    timestamptz not null default now(),
     constraint repository_watches_owner_ref_check
@@ -473,7 +459,7 @@ create table if not exists github_catalog.repository_analysis_requests (
             and failure_code is not null and retryable is not null and terminal_at is not null)
     ),
     constraint repository_analysis_requests_deduplication_key
-        unique (watch_id, attributes_digest_hex, requested_contract)
+        unique (watch_id, idempotency_digest_hex, requested_contract)
 );
 
 create index if not exists repository_analysis_requests_pending_idx

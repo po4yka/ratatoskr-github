@@ -19,7 +19,7 @@ use async_nats::jetstream::{self, consumer::AckPolicy, consumer::DeliverPolicy};
 use ratatoskr_event_envelope::{EnvelopeSchemaVersion, EventEnvelope, EventPayload, ProducerName};
 use ratatoskr_github_catalog::test_support::TestDatabase;
 use ratatoskr_github_catalog::{
-    apply_fresh_body, evaluate_metadata_watches, register_repository_analysis_watch,
+    WatchBaseline, apply_fresh_body, evaluate_metadata_watches, register_repository_analysis_watch,
 };
 use ratatoskr_github_contracts::{RepositoryAnalysisRequested, RepositoryAnalysisRevision};
 use ratatoskr_identifiers::{EntityRef, EventId, Extensions, TenantRef, WireTimestamp};
@@ -155,6 +155,7 @@ pub async fn queue_analysis_request(
         &database.database,
         TenantRef::parse(owner)?,
         repository.repository_id,
+        WatchBaseline::Current,
     )
     .await?;
     let changed = body("after");

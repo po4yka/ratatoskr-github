@@ -9,10 +9,10 @@ use crate::backup_policy::mark_backup_policy_dirty_in_tx;
 
 type Transaction<'a> = sqlx::Transaction<'a, sqlx::Postgres>;
 
-/// The one predicate that decides which owner an outbox, inbox or publication row belongs to.
+/// The one predicate that decides which owner an outbox or inbox row belongs to.
 ///
 /// The real producers write three shapes and no other: a contract payload with a top-level
-/// `owner` (`RepositoryAnalysisRequested`, `Completed`, `Failed` and the publication copy), a
+/// `owner` (`RepositoryAnalysisRequested`, `Completed` and `Failed`), a
 /// complete envelope with a `tenant_id`, and a stored `github.sync.requested.v1` command envelope
 /// whose payload names the `account`. Rows with none of them (the Vault policy command and its
 /// acknowledgement) are catalog-wide and untouched. `$1` is the owner reference.
@@ -40,7 +40,6 @@ pub(crate) const CATALOG_CHILDREN: &[&str] = &[
     "repository_aliases",
     "repository_metadata",
     "repository_metadata_revisions",
-    "repository_analysis_publications",
     "backup_policies",
 ];
 
@@ -52,7 +51,6 @@ const OWNER_LISTS: &str = "select list_id from github_catalog.star_lists \
      where account_id in (select account_id from github_catalog.github_accounts where owner_ref = $1)";
 
 const README_IN_METADATA: &str = "readme_revision #>> '{content_ref,digest,hex}'";
-const README_IN_PUBLICATION: &str = "payload #>> '{source_revision,readme,content_ref,digest,hex}'";
 const README_IN_REQUEST: &str = "source_revision #>> '{readme,content_ref,digest,hex}'";
 
 /// Removes everything keyed to `owner_ref` and collects what only that owner reached, inside the
@@ -112,7 +110,6 @@ async fn capture_candidates(
         "select repository_id from github_catalog.repository_watches where owner_ref = $1".to_owned(),
         "select repository_id from github_catalog.repository_analysis_requests where owner_ref = $1".to_owned(),
         "select repository_id from github_catalog.repository_analysis_links where owner_ref = $1".to_owned(),
-        format!("select repository_id from github_catalog.repository_analysis_publications where {OWNER_KEYED_PAYLOAD}"),
         "select repository.repository_id from github_catalog.repositories repository \
          join github_catalog.repository_action_attempts attempt \
            on attempt.github_repository_numeric_id = repository.provider_repository_id \
@@ -143,11 +140,6 @@ async fn capture_candidates(
              where repository_id in (select repository_id from erasure_candidates)"
         ),
         format!(
-            "select {README_IN_PUBLICATION} from github_catalog.repository_analysis_publications \
-             where repository_id in (select repository_id from erasure_candidates) \
-                or {OWNER_KEYED_PAYLOAD}"
-        ),
-        format!(
             "select {README_IN_REQUEST} from github_catalog.repository_analysis_requests \
              where owner_ref = $1"
         ),
@@ -174,9 +166,6 @@ async fn delete_owner_rows(
     let statements = [
         format!("delete from github_catalog.outbox_events where {OWNER_KEYED_PAYLOAD}"),
         format!("delete from github_catalog.inbox_events where {OWNER_KEYED_PAYLOAD}"),
-        format!(
-            "delete from github_catalog.repository_analysis_publications where {OWNER_KEYED_PAYLOAD}"
-        ),
         "delete from github_catalog.repository_action_attempts where owner_ref = $1".to_owned(),
         "delete from github_catalog.repository_analysis_links where owner_ref = $1".to_owned(),
         "delete from github_catalog.repository_analysis_requests where owner_ref = $1".to_owned(),
@@ -237,8 +226,7 @@ async fn collect_unreferenced_repositories(
     transaction: &mut Transaction<'_>,
 ) -> Result<u64, PersistenceError> {
     // Besides the foreign-keyed owner tables, another owner's action attempt (keyed by the numeric
-    // provider id) or analysis publication (a catalog child that carries its owner in the
-    // payload) also keeps the repository alive; the erased owner's own were deleted already.
+    // provider id) also keeps the repository alive; the erased owner's own were deleted already.
     let mut conditions: Vec<String> = OWNER_REFERENCES
         .iter()
         .map(|table| {
@@ -253,11 +241,6 @@ async fn collect_unreferenced_repositories(
          join github_catalog.repositories repository \
            on repository.provider_repository_id = attempt.github_repository_numeric_id \
          where repository.repository_id = candidate.repository_id)"
-            .to_owned(),
-    );
-    conditions.push(
-        "not exists (select 1 from github_catalog.repository_analysis_publications publication \
-         where publication.repository_id = candidate.repository_id)"
             .to_owned(),
     );
     let unreferenced = conditions.join(" and ");
@@ -311,8 +294,6 @@ async fn collect_unreferenced_readme_bytes(
              where blob.content_digest in (select digest from erasure_readme_digests) \
                and not exists (select 1 from github_catalog.repository_metadata \
                                 where {README_IN_METADATA} = blob.content_digest) \
-               and not exists (select 1 from github_catalog.repository_analysis_publications \
-                                where {README_IN_PUBLICATION} = blob.content_digest) \
                and not exists (select 1 from github_catalog.repository_analysis_requests \
                                 where {README_IN_REQUEST} = blob.content_digest)"
         ),

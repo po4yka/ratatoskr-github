@@ -68,9 +68,8 @@ pub use legacy::{
     legacy_shadow_account_ids,
 };
 pub use metadata::{
-    AppliedOutcome, REVISION_HISTORY_LIMIT, ReadmeBlobError, RepositoryAnalysisPublicationError,
-    RepositoryAnalysisSource, apply_fresh_body, apply_fresh_source, apply_not_modified,
-    store_readme,
+    AppliedOutcome, REVISION_HISTORY_LIMIT, ReadmeBlobError, RepositoryAnalysisSource,
+    RepositorySourceError, apply_fresh_body, apply_fresh_source, apply_not_modified, store_readme,
 };
 pub use modes::{
     RequestedMode, SetModeRequest, TrackOutcome, set_repository_mode, track_repository,
@@ -79,7 +78,9 @@ pub use mutations::{
     MutationContext, MutationError, MutationOutcome, MutationRequest, MutationSource,
     MutationStatus, RefusalReason, RepositoryRef, execute_batch, execute_mutation,
 };
-pub use observe::{ObserveError, ObserveOutcome, observe_repository};
+pub use observe::{
+    ObserveError, ObserveOutcome, ProviderAccess, observe_repository, record_fresh_repository,
+};
 pub use snapshot::{FullSnapshotOutcome, SnapshotError, run_full_snapshot};
 pub use star_lists::{
     ListMember, StarListSnapshotOutcome, StarListSummary, StarListsError, current_list_members,
@@ -88,8 +89,9 @@ pub use star_lists::{
 pub use telemetry::{TelemetryError, init_telemetry};
 pub use watches::{
     AnalysisDispatch, AnalysisRequestState, RepositoryAnalysisRequestStatus, TerminalFactOutcome,
-    WatchError, WatchEvaluation, WatchRegistration, consume_repository_analysis_completed,
-    consume_repository_analysis_failed, dispatch_due_repository_analysis,
-    evaluate_metadata_watches, register_repository_analysis_watch,
-    repository_analysis_request_state, set_repository_analysis_watch_enabled,
+    WatchBaseline, WatchError, WatchEvaluation, WatchRegistration,
+    consume_repository_analysis_completed, consume_repository_analysis_failed,
+    dispatch_due_repository_analysis, evaluate_metadata_watches,
+    register_repository_analysis_watch, repository_analysis_request_state,
+    set_repository_analysis_watch_enabled,
 };

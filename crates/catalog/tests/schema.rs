@@ -100,7 +100,6 @@ async fn owned_schema_applies_twice_without_cross_schema_objects()
             "repository_aliases",
             "repository_analysis_dispatch_cursor",
             "repository_analysis_links",
-            "repository_analysis_publications",
             "repository_analysis_requests",
             "repository_metadata",
             "repository_metadata_revisions",

@@ -11,14 +11,14 @@ use axum::routing::{get, post};
 use axum::{Json, Router};
 use ratatoskr_error_contracts::{ErrorCode, ErrorEnvelope};
 use ratatoskr_github_catalog::provider::{
-    FetchOutcome, FreshRepository, GithubApi, ReqwestGithubApi,
+    FetchOutcome, FreshRepository, GithubApi, OwnerName, ReqwestGithubApi,
 };
 use ratatoskr_github_catalog::rate_limit::{RateLimitLedger, TokenRef};
 use ratatoskr_github_catalog::{
     AliasKind, AppliedOutcome, CredentialKey, Database, MutationContext, MutationError,
-    MutationRequest, MutationSource, MutationStatus, RefusalReason, RepositoryRef, TrackOutcome,
-    apply_fresh_body, execute_mutation, load_active_pat, record_alias, track_repository,
-    upsert_repository,
+    MutationRequest, MutationSource, MutationStatus, ObserveError, ProviderAccess, RefusalReason,
+    RepositoryRef, TrackOutcome, execute_mutation, load_active_pat, record_alias,
+    record_fresh_repository, track_repository, upsert_repository,
 };
 use ratatoskr_github_contracts::{
     GitHubAccountRef, GitHubRepositoryNumericId, GitHubRepositoryUrl, RepositoryActionCapability,
@@ -28,9 +28,10 @@ use ratatoskr_github_contracts::{
     RepositoryMetadataOutcome, RepositoryPreviewRequest, RepositoryPreviewResponse,
     RepositoryPreviewTarget, RepositoryProviderStarOutcome,
 };
-use ratatoskr_identifiers::SafeMessage;
+use ratatoskr_identifiers::{SafeMessage, TenantRef};
 use secrecy::{ExposeSecret as _, SecretString};
 use serde::Serialize;
+use time::OffsetDateTime;
 use uuid::Uuid;
 
 use crate::readme_blobs;
@@ -208,10 +209,11 @@ async fn execute_catalog_action(
     user_id: Uuid,
     request: &RepositoryActionRequest,
 ) -> Result<RepositoryActionResult, ApiFault> {
-    let fresh = match fetch_action_metadata(state, user_id, request).await? {
-        Ok(fresh) => fresh,
+    let fetched = match fetch_action_metadata(state, user_id, request).await? {
+        Ok(fetched) => fetched,
         Err(result) => return Ok(result),
     };
+    let fresh = &fetched.fresh;
     let Ok(provider_repository_id) =
         i64::try_from(request.target.github_repository_numeric_id.get())
     else {
@@ -239,11 +241,34 @@ async fn execute_catalog_action(
     {
         return Ok(metadata_persistence_failure(request.mode));
     }
-    let metadata = match apply_fresh_body(
+    let (owner, name) = repository_parts(&request.target.canonical_url)?;
+    let alias = OwnerName {
+        owner: owner.to_owned(),
+        name: name.to_owned(),
+    };
+    let access = ProviderAccess {
+        gateway: &state.provider,
+        ledger: &state.ledger,
+        token: &fetched.token,
+        credential: fetched
+            .credential
+            .as_ref()
+            .map(secrecy::ExposeSecret::expose_secret),
+    };
+    // Only a track originates analysis: it registers an unevaluated watch for the acting user, so
+    // the evaluation inside the shared function queues the first request (R2-08 a).
+    let track_for = (request.mode == RepositoryActionCapability::Track)
+        .then(|| TenantRef::parse(&format!("user:{user_id}")))
+        .transpose()
+        .map_err(|_| ApiFault::InvalidRequest)?;
+    let metadata = match record_fresh_repository(
         &state.database,
+        &access,
         identity.repository_id,
-        &fresh.body,
-        fresh.etag.as_deref(),
+        &alias,
+        fresh,
+        track_for,
+        OffsetDateTime::now_utc(),
     )
     .await
     {
@@ -251,6 +276,7 @@ async fn execute_catalog_action(
         Ok(AppliedOutcome::Created | AppliedOutcome::Updated) => {
             RepositoryMetadataOutcome::Succeeded
         }
+        Err(ObserveError::Provider(_)) => return Ok(metadata_provider_failure(request.mode)),
         Err(_) => return Ok(metadata_persistence_failure(request.mode)),
     };
     if request.mode == RepositoryActionCapability::Star {
@@ -401,11 +427,19 @@ fn star_component_failed(
     )
 }
 
+/// The fresh repository an action fetched with the caller's access, kept with that access so the
+/// README is fetched through the same credential and rate-limit budget.
+struct FetchedMetadata {
+    fresh: FreshRepository,
+    token: TokenRef,
+    credential: Option<SecretString>,
+}
+
 async fn fetch_action_metadata(
     state: &RepositoryApiState,
     user_id: Uuid,
     request: &RepositoryActionRequest,
-) -> Result<Result<FreshRepository, RepositoryActionResult>, ApiFault> {
+) -> Result<Result<FetchedMetadata, RepositoryActionResult>, ApiFault> {
     let account = eligible_account(state, user_id).await?;
     let credential = match (&account, &state.credential_key) {
         (Some((account_id, _)), Some(key)) => load_active_pat(&state.database, *account_id, key)
@@ -447,7 +481,11 @@ async fn fetch_action_metadata(
         .full_name
         .eq_ignore_ascii_case(request.target.repository_full_name.as_str());
     if numeric_matches && name_matches {
-        Ok(Ok(fresh))
+        Ok(Ok(FetchedMetadata {
+            fresh,
+            token: token_ref,
+            credential,
+        }))
     } else {
         Ok(Err(target_changed_result(request.mode)))
     }

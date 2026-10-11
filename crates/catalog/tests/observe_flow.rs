@@ -4,7 +4,10 @@
 use ratatoskr_github_catalog::provider::{OwnerName, ReqwestGithubApi};
 use ratatoskr_github_catalog::rate_limit::{RateLimitLedger, TokenRef};
 use ratatoskr_github_catalog::test_support::TestDatabase;
-use ratatoskr_github_catalog::{ObserveOutcome, observe_repository};
+use ratatoskr_github_catalog::{
+    ObserveOutcome, WatchBaseline, dispatch_due_repository_analysis, observe_repository,
+    register_repository_analysis_watch,
+};
 use ratatoskr_identifiers::TenantRef;
 use wiremock::matchers::{header, method, path};
 use wiremock::{Mock, MockServer, ResponseTemplate};
@@ -74,12 +77,22 @@ async fn observe_repository_end_to_end_via_wiremock() -> Result<(), Box<dyn std:
     let ledger = RateLimitLedger::new();
     let token = TokenRef::from_label("account-e2e");
 
+    let owner = TenantRef::parse("user:018f0000-0000-7000-8000-000000000005")?;
+    let watched = ratatoskr_github_catalog::upsert_repository(&database.database, 300_000_300)
+        .await?
+        .repository_id;
+    register_repository_analysis_watch(
+        &database.database,
+        owner,
+        watched,
+        WatchBaseline::Unevaluated,
+    )
+    .await?;
     let first = observe_repository(
         &database.database,
         &gateway,
         &ledger,
         &token,
-        TenantRef::parse("user:018f0000-0000-7000-8000-000000000005")?,
         &OwnerName {
             owner: "acme".to_owned(),
             name: "widgets".to_owned(),
@@ -105,6 +118,12 @@ async fn observe_repository_end_to_end_via_wiremock() -> Result<(), Box<dyn std:
     .fetch_one(database.database.pool())
     .await?;
     assert_eq!(revisions, 1);
+    assert_eq!(repository_id, watched);
+    dispatch_due_repository_analysis(
+        &database.database,
+        time::OffsetDateTime::from_unix_timestamp(1_767_225_600)?,
+    )
+    .await?;
     let request_payload: serde_json::Value = sqlx::query_scalar(
         "select payload from github_catalog.outbox_events
          where subject = 'evt.knowledge.repository_analysis.requested.v1'",
@@ -134,7 +153,6 @@ async fn observe_repository_end_to_end_via_wiremock() -> Result<(), Box<dyn std:
         &gateway,
         &ledger,
         &token,
-        TenantRef::parse("user:018f0000-0000-7000-8000-000000000005")?,
         &OwnerName {
             owner: "acme".to_owned(),
             name: "widgets".to_owned(),
