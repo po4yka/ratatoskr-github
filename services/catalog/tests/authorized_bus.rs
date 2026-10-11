@@ -114,6 +114,66 @@ async fn the_github_identity_relays_and_consumes_what_it_needs_and_is_refused_th
     Ok(())
 }
 
+/// XR-021 CONTRACTS.md R3-01: the only subscription the reviewed stanza allows is the service's
+/// own inbox prefix, so a connection that replies on the shared namespace never receives the
+/// consumer-info answer, the publish acknowledgement or a fetched message.
+#[tokio::test]
+async fn the_service_completes_jetstream_requests_under_its_inbox_prefix() -> TestResult {
+    let fragment = std::fs::read_to_string(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../deploy/nats/identity.conf"),
+    )?;
+    assert!(
+        fragment.contains(r#"subscribe: { allow: ["_INBOX_github.>"] }"#),
+        "the stanza must allow only the service's own inbox prefix"
+    );
+    let broker = AuthorizedBroker::start()?;
+    let admin = broker.connect(&broker.admin_seed).await?;
+    let context = provision(&admin, &GITHUB_DURABLES).await?;
+    let database = TestDatabase::create().await?;
+    let repository_id = queue_analysis_request(&database, 972_001, OWNER).await?;
+
+    // Verifying the three durables is three consumer-info requests answered on the inbox.
+    let bus = Bus::connect(&BusSettings {
+        url: broker.url(),
+        nkey_seed_path: Some(broker.github_seed.clone()),
+    })
+    .await?;
+    let lifecycle = Lifecycle::starting();
+    lifecycle.mark_ready();
+    let (stop, shutdown) = watch::channel(false);
+    let task = tokio::spawn(bus.supervise(database.database.clone(), lifecycle, shutdown));
+
+    // A publish gets its acknowledgement: the outbox row is marked published only after it.
+    eventually("the outbox row to be acknowledged", || async {
+        let published: i64 = sqlx::query_scalar(
+            "select count(*) from github_catalog.outbox_events where published_at is not null",
+        )
+        .fetch_one(database.database.pool())
+        .await?;
+        Ok::<_, Box<dyn std::error::Error>>((published >= 1).then_some(()))
+    })
+    .await?;
+
+    // A pull delivers a message: the result durable settles the request.
+    let (_message_id, request) = stored_request(&database, repository_id).await?;
+    publish_results(&context, &request).await?;
+    eventually("the completed result to be fetched and settled", || async {
+        let state =
+            repository_analysis_request_state(&database.database, request.request_id).await?;
+        Ok(
+            state
+                .is_some_and(|state| state.status == RepositoryAnalysisRequestStatus::Completed)
+                .then_some(()),
+        )
+    })
+    .await?;
+
+    stop.send(true)?;
+    task.await??;
+    database.cleanup().await?;
+    Ok(())
+}
+
 /// The dispatcher already moved the request to pending when its envelope was stored.
 async fn dispatch_is_pending(
     database: &TestDatabase,

@@ -32,6 +32,11 @@ const KNOWLEDGE_PRODUCER: &str = "ratatoskr-knowledge";
 /// Producer allowed to publish the Vault policy acknowledgement.
 const VAULT_PRODUCER: &str = "ratatoskr-vault";
 
+/// The only inbox namespace this identity may subscribe to (XR-021 CONTRACTS.md R3-01). Every
+/// JetStream reply, acknowledgement and fetched message arrives on it, so no other identity's
+/// deliveries are readable and the reviewed stanza allows `_INBOX_github.>` and nothing broader.
+const INBOX_PREFIX: &str = "_INBOX_github";
+
 const NAK_DELAY: Duration = Duration::from_secs(2);
 const SHUTDOWN_GRACE: Duration = Duration::from_secs(5);
 
@@ -133,6 +138,7 @@ impl Bus {
             None => async_nats::ConnectOptions::new(),
         };
         let client = options
+            .custom_inbox_prefix(INBOX_PREFIX)
             .event_callback(move |event| {
                 let lost_tx = lost_tx.clone();
                 async move {
