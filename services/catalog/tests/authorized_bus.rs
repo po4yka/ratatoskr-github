@@ -160,11 +160,9 @@ async fn the_service_completes_jetstream_requests_under_its_inbox_prefix() -> Te
     eventually("the completed result to be fetched and settled", || async {
         let state =
             repository_analysis_request_state(&database.database, request.request_id).await?;
-        Ok(
-            state
-                .is_some_and(|state| state.status == RepositoryAnalysisRequestStatus::Completed)
-                .then_some(()),
-        )
+        Ok(state
+            .is_some_and(|state| state.status == RepositoryAnalysisRequestStatus::Completed)
+            .then_some(()))
     })
     .await?;
 
