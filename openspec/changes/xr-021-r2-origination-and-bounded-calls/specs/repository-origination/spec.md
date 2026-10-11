@@ -34,7 +34,7 @@ A queued request SHALL carry `readme` `Present` with a `BlobRef` that resolves i
 
 ### Requirement: A periodic observer evaluates registered watches
 
-A running service with a bus SHALL, every `RATATOSKR__WATCH__OBSERVE_INTERVAL_SECONDS` (default 3600, `0` disables, at most 604800), observe at most `RATATOSKR__WATCH__BATCH` (default 10, 1 to 100) repositories that have an enabled watch, oldest observation first, through the shared rate-limit ledger with unauthenticated provider access. A changed repository SHALL queue a request for every enabled watch of every owner; an unchanged repository SHALL queue none.
+A running service with a bus SHALL, every `RATATOSKR__WATCH__OBSERVE_INTERVAL_SECONDS` (default 3600, `0` disables, at most 604800), observe at most `RATATOSKR__WATCH__BATCH` (default 10, 1 to 100) repositories that have an enabled watch, least recently attempted first, through the shared rate-limit ledger with unauthenticated provider access. The first pass SHALL run within five seconds of boot. A changed repository SHALL queue a request for every enabled watch of every owner; an unchanged repository SHALL queue none. Evaluation SHALL converge from stored state, so a stored revision a watch has not evaluated is evaluated by the next observation even when the provider answers 304.
 
 #### Scenario: Changed and unchanged repositories
 
@@ -45,6 +45,16 @@ A running service with a bus SHALL, every `RATATOSKR__WATCH__OBSERVE_INTERVAL_SE
 
 - **WHEN** more repositories than the batch hold a watch, or the interval is `0`
 - **THEN** a pass observes at most the batch, oldest first, or no pass runs
+
+#### Scenario: Unreadable repositories do not starve the others
+
+- **WHEN** at least a batch of older watched repositories fail every observation
+- **THEN** a later pass still observes a healthy watched repository, because the attempt, not the success, orders the selection
+
+#### Scenario: A lost evaluation is repaired
+
+- **WHEN** a source revision committed without its watch evaluation and the next observation is answered 304
+- **THEN** the request is queued exactly once
 
 #### Scenario: A withheld budget
 

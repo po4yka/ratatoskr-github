@@ -122,6 +122,34 @@ async fn a_refused_subject_flips_readiness_and_the_next_clean_pass_restores_it()
         "a refused row must not stop the others publishing"
     );
 
+    // Deviation from the literal R2-03 sentence, recorded in the change design: a pass that
+    // publishes every row that is due while the stuck head row is still backing off does not
+    // restore readiness, because the stuck row is the reason the check is unhealthy.
+    sqlx::query(
+        "update github_catalog.outbox_events set next_attempt_at = now() + interval '1 hour'
+         where message_id = $1",
+    )
+    .bind(refused)
+    .execute(database.database.pool())
+    .await?;
+    let later = enqueue(&database, REQUESTED_SUBJECT, 16).await?;
+    eventually("a later allowed row to publish", || async {
+        let published: bool = sqlx::query_scalar(
+            "select published_at is not null from github_catalog.outbox_events where message_id = $1",
+        )
+        .bind(later)
+        .fetch_one(database.database.pool())
+        .await?;
+        Ok::<_, Box<dyn std::error::Error>>(published.then_some(()))
+    })
+    .await?;
+    tokio::time::sleep(Duration::from_millis(1_500)).await;
+    assert_eq!(
+        get(&running.app, "/ready").await?.0,
+        503,
+        "a clean pass behind a still-stuck head row must not restore readiness"
+    );
+
     sqlx::query("delete from github_catalog.outbox_events where message_id = $1")
         .bind(refused)
         .execute(database.database.pool())

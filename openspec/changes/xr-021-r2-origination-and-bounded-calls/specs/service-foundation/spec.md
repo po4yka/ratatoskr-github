@@ -2,7 +2,7 @@
 
 ### Requirement: Publisher health reaches readiness
 
-The service SHALL keep one `bus_publish` readiness check fed by the outbox relay. The check SHALL be unhealthy when the last pass attempted a publish, at least one publish failed, and the oldest unpublished publishable row has three or more attempts or is older than 300 seconds, and healthy again after a pass that publishes every due row or finds none. A row whose envelope exceeds the connected server's `max_payload` minus 1 KiB SHALL be marked undeliverable at once, SHALL never count towards readiness, and SHALL NOT stop the relay.
+The service SHALL keep one `bus_publish` readiness check fed by the outbox relay. The check SHALL be unhealthy when the last pass attempted a publish, at least one publish failed, and the oldest unpublished publishable row has three or more attempts or is older than 300 seconds, and healthy again once the oldest unpublished publishable row is no longer stuck or none waits (a pass that only publishes later rows while a stuck row backs off keeps the check unhealthy). A row whose envelope exceeds the connected server's `max_payload` minus 1 KiB SHALL be marked undeliverable at once, SHALL never count towards readiness, and SHALL NOT stop the relay.
 
 #### Scenario: A refused subject flips readiness and recovers
 

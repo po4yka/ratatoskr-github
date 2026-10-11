@@ -15,12 +15,12 @@
 
 ## 4. Revocation confirmation (R2-08 e)
 
-- [x] 4.1 RED: add the five `revoke_*` cases in `account_erasure.rs`; `revoke_404_with_a_live_token_is_incomplete` and the probe-failure case fail because every 404 is success.
+- [x] 4.1 RED: add the five `revoke_*` cases in `account_erasure_revocation.rs`; `revoke_404_with_a_live_token_is_incomplete` and the probe-failure case fail because every 404 is success.
 - [x] 4.2 GREEN: probe `GET /user` after a 404 and update the code comment and the README sentence.
 
 ## 5. Relay health reaches readiness (R2-03, R2-04 rule 2)
 
-- [x] 5.1 RED: add `services/catalog/tests/bus_health.rs`; it fails because readiness stays 200 and an oversize row is retried forever.
+- [x] 5.1 RED: add `services/catalog/tests/bus_health.rs`; it fails because readiness stays 200 and an oversize row is retried forever. A later characterization case pins the documented deviation of design D8 (a clean pass behind a still-stuck head row keeps readiness at 503).
 - [x] 5.2 GREEN: add `Lifecycle::set_publisher_healthy`, the `bus_publish` check, `outbox_events.undeliverable_at` and the counters.
 
 ## 6. Documentation and operator example (R2-10)
@@ -47,4 +47,4 @@
 
 ## 10. Final gate
 
-- [ ] 10.1 Run the full local gate and `openspec validate --all --strict`.
+- [x] 10.1 Run the full local gate and `openspec validate --all --strict`.
