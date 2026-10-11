@@ -1,3 +1,4 @@
+# Development only. The deployed database is `ratatoskr` on port 5432 (deploy/postgres/role.sql).
 services:
   postgres:
     image: postgres:17

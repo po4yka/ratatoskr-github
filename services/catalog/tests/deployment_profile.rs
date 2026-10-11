@@ -127,3 +127,41 @@ async fn the_shipped_example_loads_and_enables_the_bus_and_the_reader_route()
     let _removed = std::fs::remove_file(&seed);
     Ok(())
 }
+
+const ROLE_FILE: &str = "deploy/postgres/role.sql";
+
+/// XR-021 CONTRACTS.md R3-11: the target runs one PostgreSQL database, `ratatoskr`, on port 5432,
+/// and the service connects to it as its own role, which a checked-in file creates.
+#[test]
+fn the_example_names_the_shared_database_and_the_role_file_exists()
+-> Result<(), Box<dyn std::error::Error>> {
+    let text = example_text()?;
+    let url = assignments(&text)
+        .into_iter()
+        .find(|(key, _)| key == "RATATOSKR__STORAGE__DATABASE_URL")
+        .map(|(_, value)| value)
+        .ok_or("the example must set RATATOSKR__STORAGE__DATABASE_URL")?;
+    assert_eq!(
+        url, "postgres://ratatoskr_github:CHANGE-ME@127.0.0.1:5432/ratatoskr",
+        "the example names the shared database and this service's own role"
+    );
+
+    let role_file = std::fs::read_to_string(
+        Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../..")
+            .join(ROLE_FILE),
+    )?;
+    assert!(
+        role_file.contains("create role ratatoskr_github"),
+        "the role file creates the role the example names"
+    );
+    assert!(
+        role_file.contains("grant connect, create on database ratatoskr to ratatoskr_github"),
+        "the role may connect to the shared database and create its schema"
+    );
+    assert!(
+        role_file.contains("nosuperuser nocreatedb nocreaterole noreplication nobypassrls"),
+        "the role carries no elevated attribute"
+    );
+    Ok(())
+}

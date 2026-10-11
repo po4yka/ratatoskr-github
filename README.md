@@ -265,9 +265,13 @@ Knowledge returns a versioned result containing purpose, technology stack, archi
 
 Changes to star lists or backup policy do not by themselves change repository content and must not trigger expensive reanalysis.
 
-## Fleet bus
+## Deployment
 
 A deployable example of every setting this service needs is `deploy/systemd/github.conf.example`; a test loads it through the service's own configuration loader.
+
+**PostgreSQL.** The target runs one PostgreSQL on port 5432 with one database, `ratatoskr`, created by `ratatoskr-platform`'s `deploy/postgres/01-database-and-roles.sql`, and every service connects to it as its own role. This service's role is `ratatoskr_github`: a PostgreSQL administrator runs `deploy/postgres/role.sql` after the Platform file and before the first start, then sets the password with `\password ratatoskr_github`. The role may connect and create, owns nothing else, and the service keeps its tables in the `github_catalog` schema. The example's `RATATOSKR__STORAGE__DATABASE_URL` is `postgres://ratatoskr_github:CHANGE-ME@127.0.0.1:5432/ratatoskr`. The database on port 5435 in `compose.yaml` and `DEVELOPMENT.md` is the development database only.
+
+## Fleet bus
 
 The process connects to the fleet NATS broker when `RATATOSKR__BUS__URL` is set. Without it the service still serves its API and queues outbox rows, but nothing relays them.
 
@@ -276,7 +280,7 @@ RATATOSKR__BUS__URL=nats://127.0.0.1:4222
 RATATOSKR__BUS__NKEY_SEED_PATH=/etc/ratatoskr/github.nkey
 ```
 
-The seed is read from the absolute path at runtime and never logged. A non-loopback broker must use `tls://` and an identity. The identity's permissions are the GITHUB stanza in `deploy/nats/identity.conf`, a byte-equal copy of the stanza in the single reviewed ACL held by `ratatoskr-platform`.
+The service connects with the inbox prefix `_INBOX_github` and its identity may subscribe to nothing else, so it cannot read another service's JetStream deliveries. The seed is read from the absolute path at runtime and never logged. A non-loopback broker must use `tls://` and an identity. The identity's permissions are the GITHUB stanza in `deploy/nats/identity.conf`, a byte-equal copy of the stanza in the single reviewed ACL held by `ratatoskr-platform`.
 
 Edge provisions the three durables this service consumes on `ratatoskr_events`, and the service verifies them at startup and never creates one: `ratatoskr_github_analysis_completed` (`evt.knowledge.repository_analysis.completed.v1`), `ratatoskr_github_analysis_failed` (`evt.knowledge.repository_analysis.failed.v1`) and `ratatoskr_github_policy_acknowledged` (`evt.vault.backup_policy.acknowledged.v1`), each explicit-ack with a 30 s ack wait. It publishes `evt.knowledge.repository_analysis.requested.v1` and `cmd.vault.backup_policy.apply_requested.v1`. When the relay, a consumer or the broker connection stops before an orderly shutdown, readiness goes false and the process exits non-zero. A relay that keeps running but cannot publish also turns readiness off: when a pass attempted a publish, one failed, and the oldest unpublished row has three failed attempts or is older than 300 seconds, `/ready` answers 503 with `{"failing":["bus_publish"]}` until a pass leaves nothing stuck; the relay itself never stops. An envelope larger than the broker's `max_payload` minus 1 KiB can never be published, so its outbox row is marked `undeliverable_at` with `payload_too_large` and never counts against readiness. A publish that times out is indistinguishable from a denied one: check the NATS server log for a `Publish Violation`.
 

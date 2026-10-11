@@ -5,8 +5,8 @@
 
 ## 2. The example names the shared database (R3-11)
 
-- [ ] 2.1 RED: add `services/catalog/tests/deployment_profile.rs::the_example_names_the_shared_database_and_the_role_file_exists`; it fails because the example names role `github` on port 5435 and `deploy/postgres/role.sql` does not exist.
-- [ ] 2.2 GREEN: edit the example and its header comment, add `deploy/postgres/role.sql`, add the PostgreSQL paragraph to `README.md`, and mark the development URLs as development.
+- [x] 2.1 RED: add `services/catalog/tests/deployment_profile.rs::the_example_names_the_shared_database_and_the_role_file_exists`; it fails because the example names role `github` on port 5435 and `deploy/postgres/role.sql` does not exist.
+- [x] 2.2 GREEN: edit the example and its header comment, add `deploy/postgres/role.sql`, add the PostgreSQL paragraph to `README.md`, and mark the development URLs as development.
 
 ## 3. Documentation from the code (R3-19)
 

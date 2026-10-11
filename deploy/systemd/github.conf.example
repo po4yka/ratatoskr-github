@@ -8,7 +8,8 @@ RATATOSKR__ADMIN__LISTEN_ADDRESS=127.0.0.1:9095
 RATATOSKR__API__LISTEN_ADDRESS=127.0.0.1:8092
 
 # The catalog database. SECRET: the URL carries the password.
-RATATOSKR__STORAGE__DATABASE_URL=postgres://github:CHANGE-ME@127.0.0.1:5435/github
+# The target runs one PostgreSQL on port 5432 with one database, `ratatoskr`, and every service connects to it as its own role. `deploy/postgres/role.sql` creates `ratatoskr_github`; a PostgreSQL administrator runs it after Platform's `01-database-and-roles.sql` and before the first start, then sets the password with `\password ratatoskr_github`. The development compose database (`github` on port 5435) is not this database and is never used in a deployment.
+RATATOSKR__STORAGE__DATABASE_URL=postgres://ratatoskr_github:CHANGE-ME@127.0.0.1:5432/ratatoskr
 
 # The provider. The default is https://api.github.com; every call is bounded by a 5 second connect timeout and this whole-exchange timeout (1000 to 120000).
 RATATOSKR__PROVIDER__TIMEOUT_MS=30000

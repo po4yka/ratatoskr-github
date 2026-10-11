@@ -8,8 +8,8 @@ The service foundation and repository domain API are implemented. The real proce
 ### Local process configuration
 
 The defaults bind operator routes to `127.0.0.1:9095`, domain routes to
-`127.0.0.1:8092`, PostgreSQL to `127.0.0.1:5435`, and the provider to
-`https://api.github.com`. Deployment may override them with:
+`127.0.0.1:8092`, the development PostgreSQL to `127.0.0.1:5435`, and the provider to
+`https://api.github.com`. Deployment may override them with (the database line below is the development database; the deployed one is `ratatoskr` on port 5432, see `deploy/systemd/github.conf.example`):
 
 ```bash
 RATATOSKR__ADMIN__LISTEN_ADDRESS=127.0.0.1:9095
@@ -67,7 +67,7 @@ Database tests create disposable databases from the current `schema.sql`. Locall
 docker compose up -d --wait
 ```
 
-Tests use `GITHUB_CATALOG_TEST_DATABASE_URL`, which defaults to `postgres://github:github@127.0.0.1:5435/github`; CI provisions its own service container.
+Tests use `GITHUB_CATALOG_TEST_DATABASE_URL`, which defaults to the development database `postgres://github:github@127.0.0.1:5435/github`; CI provisions its own service container.
 
 The bus tests need a JetStream broker: `GITHUB_TEST_NATS_URL` defaults to `nats://127.0.0.1:4225`, which the compose stack publishes. The authorization test also starts its own `nats-server` from `deploy/nats/identity.conf`, so a `nats-server` binary must be on `PATH`; it picks a free port from 57710 to 57719. A missing broker or binary fails those tests rather than skipping them. CI installs a pinned, checksummed `nats-server` and starts a broker on 4225.
 
