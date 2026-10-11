@@ -3,15 +3,19 @@
 
 use ratatoskr_github_catalog::provider::ProviderRepositoryBody;
 use ratatoskr_github_catalog::test_support::TestDatabase;
-use ratatoskr_github_catalog::{AppliedOutcome, REVISION_HISTORY_LIMIT, apply_fresh_body};
+use ratatoskr_github_catalog::test_support::record_body;
+use ratatoskr_github_catalog::{AppliedOutcome, REVISION_HISTORY_LIMIT};
 use sqlx::Row as _;
 use uuid::Uuid;
 
+/// The description carries `stargazers` because the source identity covers the analysis
+/// attributes (name, description, language) and the README, not the star count: a body that
+/// differs only in stars is the same source revision.
 fn body(provider_repository_id: i64, full_name: &str, stargazers: i64) -> ProviderRepositoryBody {
     ProviderRepositoryBody {
         provider_repository_id,
         full_name: full_name.to_owned(),
-        description: Some("A synthetic widget".to_owned()),
+        description: Some(format!("A synthetic widget with {stargazers} stars")),
         language: Some("Rust".to_owned()),
         stargazers,
         topics: vec!["widgets".to_owned()],
@@ -57,7 +61,7 @@ async fn first_metadata_observation_creates_projection_and_revision()
     let repository =
         ratatoskr_github_catalog::upsert_repository(&database.database, 300_000_200).await?;
 
-    let outcome = apply_fresh_body(
+    let outcome = record_body(
         &database.database,
         repository.repository_id,
         &body(300_000_200, "acme/widgets", 42),
@@ -87,7 +91,7 @@ async fn fresh_metadata_uses_sha256_revision_identity() -> TestResult<()> {
     let repository =
         ratatoskr_github_catalog::upsert_repository(&database.database, 300_000_299).await?;
 
-    apply_fresh_body(
+    record_body(
         &database.database,
         repository.repository_id,
         &body(300_000_299, "acme/widgets", 42),
@@ -118,7 +122,7 @@ async fn not_modified_preserves_previous_metadata() -> Result<(), Box<dyn std::e
     let database = TestDatabase::create().await?;
     let repository =
         ratatoskr_github_catalog::upsert_repository(&database.database, 300_000_201).await?;
-    apply_fresh_body(
+    record_body(
         &database.database,
         repository.repository_id,
         &body(300_000_201, "acme/widgets", 42),
@@ -169,7 +173,7 @@ async fn changed_metadata_updates_projection_and_appends_one_revision()
     let database = TestDatabase::create().await?;
     let repository =
         ratatoskr_github_catalog::upsert_repository(&database.database, 300_000_202).await?;
-    apply_fresh_body(
+    record_body(
         &database.database,
         repository.repository_id,
         &body(300_000_202, "acme/widgets", 42),
@@ -177,7 +181,7 @@ async fn changed_metadata_updates_projection_and_appends_one_revision()
     )
     .await?;
 
-    let outcome = apply_fresh_body(
+    let outcome = record_body(
         &database.database,
         repository.repository_id,
         &body(300_000_202, "acme/widgets", 43),
@@ -202,7 +206,7 @@ async fn unchanged_payload_does_not_append_revision() -> Result<(), Box<dyn std:
     let database = TestDatabase::create().await?;
     let repository =
         ratatoskr_github_catalog::upsert_repository(&database.database, 300_000_203).await?;
-    apply_fresh_body(
+    record_body(
         &database.database,
         repository.repository_id,
         &body(300_000_203, "acme/widgets", 42),
@@ -210,7 +214,7 @@ async fn unchanged_payload_does_not_append_revision() -> Result<(), Box<dyn std:
     )
     .await?;
 
-    let outcome = apply_fresh_body(
+    let outcome = record_body(
         &database.database,
         repository.repository_id,
         &body(300_000_203, "acme/widgets", 42),
@@ -239,7 +243,7 @@ async fn revision_history_is_bounded_to_ten_most_recent() -> Result<(), Box<dyn 
         ratatoskr_github_catalog::upsert_repository(&database.database, 300_000_204).await?;
 
     for stars in 0..11 {
-        apply_fresh_body(
+        record_body(
             &database.database,
             repository.repository_id,
             &body(300_000_204, "acme/widgets", stars),

@@ -108,114 +108,14 @@ pub async fn store_readme(database: &Database, bytes: &[u8]) -> Result<BlobRef, 
     })
 }
 
-/// Applies one fresh provider body to the repository's metadata projection.
-///
-/// A body identical to the current revision only moves fetch bookkeeping;
-/// a differing or first body refreshes the projection and appends exactly
-/// one raw revision, pruning history beyond [`REVISION_HISTORY_LIMIT`].
-///
-/// # Errors
-///
-/// Returns [`PersistenceError`] when the database refuses the operation.
-pub async fn apply_fresh_body(
-    database: &Database,
-    repository_id: Uuid,
-    body: &ProviderRepositoryBody,
-    etag: Option<&str>,
-) -> Result<AppliedOutcome, PersistenceError> {
-    let payload = normalized_payload(body);
-    let payload_text = payload.to_string();
-
-    let mut transaction = database
-        .pool()
-        .begin()
-        .await
-        .map_err(PersistenceError::Query)?;
-
-    let current_hash: Option<String> = sqlx::query_scalar(
-        "select content_hash from github_catalog.repository_metadata
-         where repository_id = $1 for update",
-    )
-    .bind(repository_id)
-    .fetch_optional(&mut *transaction)
-    .await
-    .map_err(PersistenceError::Query)?;
-    let new_hash = sha256_hex(&Sha256::digest(payload_text.as_bytes()));
-
-    if current_hash.as_deref() == Some(new_hash.as_str()) {
-        sqlx::query("update github_catalog.repository_metadata set fetched_at = now() where repository_id = $1")
-            .bind(repository_id)
-            .execute(&mut *transaction)
-            .await
-            .map_err(PersistenceError::Query)?;
-        transaction
-            .commit()
-            .await
-            .map_err(PersistenceError::Query)?;
-        return Ok(AppliedOutcome::Unchanged);
-    }
-
-    sqlx::query(
-        "insert into github_catalog.repository_metadata
-             (repository_id, description, language, stargazers_count, topics,
-              default_branch, pushed_at, provider_etag, content_hash, fetched_at)
-         values ($1, $2, $3, $4, $5, $6, $7::timestamptz, $8, $9, now())
-         on conflict (repository_id) do update set
-             description = excluded.description,
-             language = excluded.language,
-             stargazers_count = excluded.stargazers_count,
-             topics = excluded.topics,
-             default_branch = excluded.default_branch,
-             pushed_at = excluded.pushed_at,
-             provider_etag = excluded.provider_etag,
-             content_hash = excluded.content_hash,
-             fetched_at = now()",
-    )
-    .bind(repository_id)
-    .bind(body.description.clone())
-    .bind(body.language.clone())
-    .bind(body.stargazers)
-    .bind(serde_json::to_value(&body.topics).unwrap_or_default())
-    .bind(body.default_branch.clone())
-    .bind(body.pushed_at.clone())
-    .bind(etag)
-    .bind(&new_hash)
-    .execute(&mut *transaction)
-    .await
-    .map_err(PersistenceError::Query)?;
-
-    sqlx::query(
-        "insert into github_catalog.repository_metadata_revisions
-             (revision_id, repository_id, payload, content_hash, observed_at)
-         values ($1, $2, $3, $4, now())",
-    )
-    .bind(Uuid::now_v7())
-    .bind(repository_id)
-    .bind(payload)
-    .bind(&new_hash)
-    .execute(&mut *transaction)
-    .await
-    .map_err(PersistenceError::Query)?;
-
-    prune_history_in_tx(&mut transaction, repository_id).await?;
-
-    transaction
-        .commit()
-        .await
-        .map_err(PersistenceError::Query)?;
-    match current_hash {
-        None => Ok(AppliedOutcome::Created),
-        Some(_) => Ok(AppliedOutcome::Updated),
-    }
-}
-
 /// Applies one complete immutable source revision: the metadata projection, its README evidence
 /// and one raw history revision.
 ///
-/// Unlike [`apply_fresh_body`], this path includes README evidence in the SHA-256 source identity.
-/// Replays of an equal metadata/README pair converge without a second revision. It queues no
-/// analysis request: requests originate only from watches, which the caller evaluates afterwards
-/// with `evaluate_metadata_watches`.
+/// The SHA-256 source identity covers the analysis attributes and the README evidence, so replays
+/// of an equal pair converge without a second revision, and a differing or first source refreshes
+/// the projection and appends exactly one raw revision, pruning history beyond
+/// [`REVISION_HISTORY_LIMIT`]. It queues no analysis request: requests originate only from
+/// watches, which the caller evaluates afterwards with `evaluate_metadata_watches`.
 ///
 /// # Errors
 ///

@@ -40,6 +40,11 @@
 - [x] 8.3 RED: add `observe_flow.rs::the_readme_request_is_gated_by_the_budget_the_repository_response_reported`; it fails because the README request is made without `ledger.acquire`.
 - [x] 8.4 GREEN: `record_fresh_repository` acquires before the README request and returns `ObserveError::RateLimited`; `observe_repository` reports it as `ObserveOutcome::RateLimited` and the action route as a provider failure.
 
-## 9. Final gate
+## 9. One source-revision path (review fix, AGENTS.md no duplicate code paths)
 
-- [ ] 9.1 Run the full local gate and `openspec validate --all --strict`.
+- [x] 9.1 RED: add `schema.rs::a_metadata_projection_requires_its_readme_revision`; it fails because a projection without README evidence is accepted.
+- [x] 9.2 GREEN: make `repository_metadata.readme_revision` not null (`schema.sql` in place), delete `apply_fresh_body` and the `NotPreserved` fallback in `watches.rs`, and rewrite the metadata, watch and bus tests on `apply_fresh_source` through `test_support::record_body`.
+
+## 10. Final gate
+
+- [ ] 10.1 Run the full local gate and `openspec validate --all --strict`.

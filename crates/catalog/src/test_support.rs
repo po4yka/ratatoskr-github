@@ -33,6 +33,34 @@ pub const fn erasure_table_classification() -> ErasureTableClassification {
     }
 }
 
+/// Records `body` as a source revision whose README is absent (`not_found`), the smallest
+/// complete source the catalog accepts, for tests that exercise metadata and watches rather than
+/// README handling.
+///
+/// # Errors
+///
+/// Returns [`crate::RepositorySourceError`] when the source cannot be represented or committed.
+pub async fn record_body(
+    database: &Database,
+    repository_id: Uuid,
+    body: &crate::provider::ProviderRepositoryBody,
+    etag: Option<&str>,
+) -> Result<crate::AppliedOutcome, crate::RepositorySourceError> {
+    crate::apply_fresh_source(
+        database,
+        repository_id,
+        body,
+        etag,
+        &crate::RepositoryAnalysisSource {
+            readme: ratatoskr_github_contracts::ReadmeRevision::Absent {
+                reason: ratatoskr_github_contracts::ReadmeAbsenceReason::NotFound,
+            },
+            readme_etag: None,
+        },
+    )
+    .await
+}
+
 /// An isolated disposable catalog database.
 #[derive(Debug)]
 pub struct TestDatabase {

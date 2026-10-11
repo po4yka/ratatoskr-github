@@ -17,9 +17,9 @@ use std::time::Duration;
 
 use async_nats::jetstream::{self, consumer::AckPolicy, consumer::DeliverPolicy};
 use ratatoskr_event_envelope::{EnvelopeSchemaVersion, EventEnvelope, EventPayload, ProducerName};
-use ratatoskr_github_catalog::test_support::TestDatabase;
+use ratatoskr_github_catalog::test_support::{TestDatabase, record_body};
 use ratatoskr_github_catalog::{
-    WatchBaseline, apply_fresh_body, evaluate_metadata_watches, register_repository_analysis_watch,
+    WatchBaseline, evaluate_metadata_watches, register_repository_analysis_watch,
 };
 use ratatoskr_github_contracts::{RepositoryAnalysisRequested, RepositoryAnalysisRevision};
 use ratatoskr_identifiers::{EntityRef, EventId, Extensions, TenantRef, WireTimestamp};
@@ -146,7 +146,7 @@ pub async fn queue_analysis_request(
         default_branch: Some("main".to_owned()),
         pushed_at: Some("2026-08-27T00:00:00Z".to_owned()),
     };
-    apply_fresh_body(
+    record_body(
         &database.database,
         repository.repository_id,
         &body("before"),
@@ -161,7 +161,7 @@ pub async fn queue_analysis_request(
     )
     .await?;
     let changed = body("after");
-    apply_fresh_body(&database.database, repository.repository_id, &changed, None).await?;
+    record_body(&database.database, repository.repository_id, &changed, None).await?;
     evaluate_metadata_watches(&database.database, repository.repository_id, fixed_now()).await?;
     Ok(repository.repository_id)
 }

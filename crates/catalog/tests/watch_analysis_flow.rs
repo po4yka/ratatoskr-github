@@ -9,9 +9,9 @@
 
 use ratatoskr_github_catalog::provider::{OwnerName, ProviderRepositoryBody, ReqwestGithubApi};
 use ratatoskr_github_catalog::rate_limit::{RateLimitLedger, TokenRef};
-use ratatoskr_github_catalog::test_support::TestDatabase;
+use ratatoskr_github_catalog::test_support::{TestDatabase, record_body};
 use ratatoskr_github_catalog::{
-    AnalysisDispatch, TerminalFactOutcome, WatchBaseline, WatchEvaluation, apply_fresh_body,
+    AnalysisDispatch, TerminalFactOutcome, WatchBaseline, WatchEvaluation,
     consume_repository_analysis_completed, dispatch_due_repository_analysis,
     evaluate_metadata_watches, observe_repository, register_repository_analysis_watch,
     repository_analysis_request_state,
@@ -38,8 +38,8 @@ async fn watch_registration_baselines_existing_metadata() -> Result<(), Box<dyn 
         ratatoskr_github_catalog::upsert_repository(&database.database, 904_001).await?;
     sqlx::query(
         "insert into github_catalog.repository_metadata
-             (repository_id, stargazers_count, content_hash, fetched_at)
-         values ($1, 0, 'current-metadata', now())",
+             (repository_id, stargazers_count, readme_revision, content_hash, fetched_at)
+         values ($1, 0, '{\"state\": \"absent\", \"reason\": \"not_found\"}', 'current-metadata', now())",
     )
     .bind(repository.repository_id)
     .execute(database.database.pool())
@@ -77,7 +77,7 @@ async fn metadata_delta_queues_and_dispatches_one_analysis_request()
     let server = MockServer::start().await;
     let repository =
         ratatoskr_github_catalog::upsert_repository(&database.database, 904_002).await?;
-    apply_fresh_body(
+    record_body(
         &database.database,
         repository.repository_id,
         &repository_body("initial description"),
@@ -181,7 +181,7 @@ async fn matching_completion_resolves_the_pending_request_once()
         default_branch: Some("main".to_owned()),
         pushed_at: None,
     };
-    apply_fresh_body(&database.database, repository.repository_id, &initial, None).await?;
+    record_body(&database.database, repository.repository_id, &initial, None).await?;
     register_repository_analysis_watch(
         &database.database,
         TenantRef::parse("user:018f0000-0000-7000-8000-000000000903")?,
@@ -193,7 +193,7 @@ async fn matching_completion_resolves_the_pending_request_once()
         description: Some("changed".to_owned()),
         ..initial
     };
-    apply_fresh_body(&database.database, repository.repository_id, &changed, None).await?;
+    record_body(&database.database, repository.repository_id, &changed, None).await?;
     ratatoskr_github_catalog::evaluate_metadata_watches(
         &database.database,
         repository.repository_id,

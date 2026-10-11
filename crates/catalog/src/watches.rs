@@ -1,10 +1,9 @@
 //! User-owned metadata watches and durable Knowledge analysis request linkage.
 
 use ratatoskr_github_contracts::{
-    AnalysisFailureCode, ReadmeAbsenceReason, ReadmeRevision, RepositoryAnalysisAttributes,
-    RepositoryAnalysisCompleted, RepositoryAnalysisContract, RepositoryAnalysisFailed,
-    RepositoryAnalysisRequested, RepositoryAnalysisRevision, RepositoryDescription,
-    RepositoryFullName, RepositoryLanguage,
+    AnalysisFailureCode, ReadmeRevision, RepositoryAnalysisAttributes, RepositoryAnalysisCompleted,
+    RepositoryAnalysisContract, RepositoryAnalysisFailed, RepositoryAnalysisRequested,
+    RepositoryAnalysisRevision, RepositoryDescription, RepositoryFullName, RepositoryLanguage,
 };
 use ratatoskr_identifiers::{
     ContentDigest, DigestAlgorithm, DigestHex, Extensions, RepositoryAnalysisRequestId,
@@ -238,7 +237,7 @@ pub async fn evaluate_metadata_watches(
         .begin()
         .await
         .map_err(PersistenceError::Query)?;
-    let (metadata_hash, stored_readme): (String, Option<serde_json::Value>) = sqlx::query_as(
+    let (metadata_hash, stored_readme): (String, serde_json::Value) = sqlx::query_as(
         "select content_hash, readme_revision from github_catalog.repository_metadata
          where repository_id = $1",
     )
@@ -520,16 +519,9 @@ pub async fn repository_analysis_request_state(
     .transpose()
 }
 
-/// The README evidence the stored projection names. A projection written without README evidence
-/// (the body-only primitive `apply_fresh_body`) honestly reports that no README was preserved;
-/// the service paths always store the revision they fetched.
-fn stored_readme_revision(stored: Option<serde_json::Value>) -> Result<ReadmeRevision, WatchError> {
-    match stored {
-        Some(value) => serde_json::from_value(value).map_err(|_| WatchError::InvalidStoredIdentity),
-        None => Ok(ReadmeRevision::Absent {
-            reason: ReadmeAbsenceReason::NotPreserved,
-        }),
-    }
+/// The README evidence the stored projection was recorded with.
+fn stored_readme_revision(stored: serde_json::Value) -> Result<ReadmeRevision, WatchError> {
+    serde_json::from_value(stored).map_err(|_| WatchError::InvalidStoredIdentity)
 }
 
 /// The fields of a stored raw revision (`metadata::normalized_payload`) that form the analysis

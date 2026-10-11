@@ -564,3 +564,29 @@ async fn reconciliation_repairs_carry_named_actions_once_per_run()
     database.cleanup().await?;
     Ok(())
 }
+
+/// Every metadata projection carries the README evidence it was recorded with, so a watch
+/// evaluation never has to guess what the README was.
+#[tokio::test]
+async fn a_metadata_projection_requires_its_readme_revision()
+-> Result<(), Box<dyn std::error::Error>> {
+    let database = TestDatabase::create().await?;
+    let repository =
+        ratatoskr_github_catalog::upsert_repository(&database.database, 990_301_i64).await?;
+
+    let without_readme = sqlx::query(
+        "insert into github_catalog.repository_metadata
+             (repository_id, stargazers_count, content_hash, fetched_at)
+         values ($1, 0, 'hash', now())",
+    )
+    .bind(repository.repository_id)
+    .execute(database.database.pool())
+    .await;
+
+    assert!(
+        without_readme.is_err(),
+        "a projection without README evidence must be refused"
+    );
+    database.cleanup().await?;
+    Ok(())
+}

@@ -9,10 +9,10 @@
 
 use ratatoskr_event_envelope::EventEnvelope;
 use ratatoskr_github_catalog::provider::ProviderRepositoryBody;
-use ratatoskr_github_catalog::test_support::TestDatabase;
+use ratatoskr_github_catalog::test_support::{TestDatabase, record_body};
 use ratatoskr_github_catalog::{
-    AnalysisDispatch, RepositoryAnalysisSource, WatchBaseline, WatchEvaluation, apply_fresh_body,
-    apply_fresh_source, dispatch_due_repository_analysis, evaluate_metadata_watches,
+    AnalysisDispatch, RepositoryAnalysisSource, WatchBaseline, WatchEvaluation, apply_fresh_source,
+    dispatch_due_repository_analysis, evaluate_metadata_watches,
     register_repository_analysis_watch, store_readme,
 };
 use ratatoskr_github_contracts::{ReadmeRevision, RepositoryAnalysisRequested};
@@ -46,7 +46,7 @@ async fn dispatched_analysis_request_is_a_complete_event_envelope()
     let database = TestDatabase::create().await?;
     let repository =
         ratatoskr_github_catalog::upsert_repository(&database.database, 941_001).await?;
-    apply_fresh_body(
+    record_body(
         &database.database,
         repository.repository_id,
         &body("before"),
@@ -60,7 +60,7 @@ async fn dispatched_analysis_request_is_a_complete_event_envelope()
         WatchBaseline::Current,
     )
     .await?;
-    apply_fresh_body(
+    record_body(
         &database.database,
         repository.repository_id,
         &body("after"),
@@ -110,7 +110,7 @@ async fn an_unevaluated_baseline_queues_the_first_analysis()
     let database = TestDatabase::create().await?;
     let repository =
         ratatoskr_github_catalog::upsert_repository(&database.database, 941_001).await?;
-    apply_fresh_body(
+    record_body(
         &database.database,
         repository.repository_id,
         &body("only"),

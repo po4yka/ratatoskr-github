@@ -70,7 +70,7 @@ pub use legacy::{
 };
 pub use metadata::{
     AppliedOutcome, REVISION_HISTORY_LIMIT, ReadmeBlobError, RepositoryAnalysisSource,
-    RepositorySourceError, apply_fresh_body, apply_fresh_source, apply_not_modified, store_readme,
+    RepositorySourceError, apply_fresh_source, apply_not_modified, store_readme,
 };
 pub use modes::{
     RequestedMode, SetModeRequest, TrackOutcome, set_repository_mode, track_repository,
