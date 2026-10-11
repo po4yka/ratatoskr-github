@@ -68,6 +68,12 @@ pub enum ObserveError {
     /// The source revision could not be represented or committed.
     #[error(transparent)]
     Source(#[from] RepositorySourceError),
+    /// The shared budget withheld the README request that completes a source revision.
+    #[error("the provider budget is exhausted until the README request may proceed")]
+    RateLimited {
+        /// When the request may proceed.
+        retry_at: SystemTime,
+    },
     /// A not-modified answer arrived for a repository the catalog does not
     /// hold a validator for.
     #[error("a not-modified response arrived without catalog state")]
@@ -192,11 +198,14 @@ pub struct ProviderAccess<'a, G> {
 ///
 /// This is the one function the action route and the periodic observer share (XR-021
 /// CONTRACTS.md R2-08 b). `now` is the instant the evaluation is made at, so a request it queues
-/// is due from `now`.
+/// is due from `now`. The README request acquires from the ledger like the repository request
+/// that produced `fresh`, so one source revision spends two units of the budget.
 ///
 /// # Errors
 ///
-/// Returns [`ObserveError`] for provider, persistence, or watch failures.
+/// Returns [`ObserveError`] for provider, persistence, or watch failures, and
+/// [`ObserveError::RateLimited`] when the budget withholds the README request; nothing has been
+/// applied then, and the next observation fetches the repository again.
 pub async fn record_fresh_repository<G>(
     database: &Database,
     access: &ProviderAccess<'_, G>,
@@ -211,6 +220,10 @@ where
 {
     let (_, stored_readme_etag, stored_readme_revision) =
         stored_validators(database, repository_id).await?;
+    // The README is a second provider request, so it spends its own unit of the budget.
+    if let Err(AcquireError::RateLimited { retry_at }) = access.ledger.acquire(access.token) {
+        return Err(ObserveError::RateLimited { retry_at });
+    }
     let readme_reply = access
         .gateway
         .fetch_readme(
@@ -270,7 +283,7 @@ where
         )
         .await?;
     }
-    evaluate_metadata_watches(database, repository_id, &fresh.body, now).await?;
+    evaluate_metadata_watches(database, repository_id, now).await?;
     Ok(applied)
 }
 
@@ -334,7 +347,7 @@ where
                 token,
                 credential: None,
             };
-            record_fresh_repository(
+            match record_fresh_repository(
                 database,
                 &access,
                 identity.repository_id,
@@ -343,14 +356,23 @@ where
                 None,
                 now,
             )
-            .await?;
-            Ok(ObserveOutcome::Observed {
-                repository_id: identity.repository_id,
-            })
+            .await
+            {
+                Ok(_) => Ok(ObserveOutcome::Observed {
+                    repository_id: identity.repository_id,
+                }),
+                Err(ObserveError::RateLimited { retry_at }) => {
+                    Ok(ObserveOutcome::RateLimited { retry_at })
+                }
+                Err(error) => Err(error),
+            }
         }
         crate::provider::FetchOutcome::NotModified => {
             let repository_id = known_repository.ok_or(ObserveError::MissingRepositoryState)?;
             apply_not_modified(database, repository_id).await?;
+            // A confirmed validator proves the stored revision is current; it does not prove the
+            // watches ever evaluated it, so a lost evaluation is repaired here.
+            evaluate_metadata_watches(database, repository_id, now).await?;
             Ok(ObserveOutcome::NotModified { repository_id })
         }
         crate::provider::FetchOutcome::MovedPermanently { target } => {

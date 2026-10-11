@@ -270,6 +270,56 @@ async fn failing_repositories_do_not_starve_a_healthy_one() -> TestResult {
 }
 
 #[tokio::test]
+async fn a_not_modified_pass_queues_the_request_a_crashed_evaluation_left_behind() -> TestResult {
+    let database = TestDatabase::create().await?;
+    let server = MockServer::start().await;
+    let repository_id = seed(&database, 977_001, "alpha").await?;
+    // The process died after the new source revision and its validator committed and before the
+    // watches were evaluated: the stored entity tag now matches the provider, so the next
+    // observation is a 304 that fetches no body.
+    apply_fresh_source(
+        &database.database,
+        repository_id,
+        &body(977_001, "alpha", "v2"),
+        Some("\"v2\""),
+        &RepositoryAnalysisSource {
+            readme: ReadmeRevision::Absent {
+                reason: ReadmeAbsenceReason::NotFound,
+            },
+            readme_etag: None,
+        },
+    )
+    .await?;
+    assert!(request_owners(&database, "alpha").await?.is_empty());
+    Mock::given(method("GET"))
+        .and(path("/repos/acme/alpha"))
+        .and(header("if-none-match", "\"v2\""))
+        .respond_with(ResponseTemplate::new(304))
+        .mount(&server)
+        .await;
+    let observer = observer(&server, 3600, 10)?.expect("enabled");
+
+    let pass = observer
+        .pass(&database.database, OffsetDateTime::now_utc())
+        .await?;
+
+    assert_eq!(pass.unchanged, 1);
+    assert_eq!(
+        request_owners(&database, "alpha").await?,
+        vec![OWNER.to_owned()],
+        "the lost evaluation was not repeated from the stored revision"
+    );
+    // The stored revision is evaluated once: a further pass queues nothing more.
+    observer
+        .pass(&database.database, OffsetDateTime::now_utc())
+        .await?;
+    assert_eq!(request_owners(&database, "alpha").await?.len(), 1);
+
+    database.cleanup().await?;
+    Ok(())
+}
+
+#[tokio::test]
 async fn interval_zero_disables_the_observer() -> TestResult {
     let server = MockServer::start().await;
     assert!(observer(&server, 0, 10)?.is_none());

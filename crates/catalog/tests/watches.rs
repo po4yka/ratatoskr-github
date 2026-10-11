@@ -67,13 +67,7 @@ async fn dispatched_analysis_request_is_a_complete_event_envelope()
         None,
     )
     .await?;
-    evaluate_metadata_watches(
-        &database.database,
-        repository.repository_id,
-        &body("after"),
-        fixed_now(),
-    )
-    .await?;
+    evaluate_metadata_watches(&database.database, repository.repository_id, fixed_now()).await?;
     let AnalysisDispatch::Pending { request_id } =
         dispatch_due_repository_analysis(&database.database, fixed_now()).await?
     else {
@@ -136,13 +130,9 @@ async fn an_unevaluated_baseline_queues_the_first_analysis()
         .await?;
     }
 
-    let evaluation = evaluate_metadata_watches(
-        &database.database,
-        repository.repository_id,
-        &body("only"),
-        fixed_now(),
-    )
-    .await?;
+    let evaluation =
+        evaluate_metadata_watches(&database.database, repository.repository_id, fixed_now())
+            .await?;
 
     assert_eq!(evaluation, WatchEvaluation::Queued { requests: 1 });
     let owners: Vec<String> =
@@ -151,13 +141,8 @@ async fn an_unevaluated_baseline_queues_the_first_analysis()
             .await?;
     assert_eq!(owners, vec![OWNER.to_owned()]);
     assert_eq!(
-        evaluate_metadata_watches(
-            &database.database,
-            repository.repository_id,
-            &body("only"),
-            fixed_now(),
-        )
-        .await?,
+        evaluate_metadata_watches(&database.database, repository.repository_id, fixed_now(),)
+            .await?,
         WatchEvaluation::Unchanged,
         "evaluating the same revision again queues nothing"
     );
@@ -201,13 +186,8 @@ async fn a_readme_only_change_queues_a_new_request() -> Result<(), Box<dyn std::
             .await?;
         }
         assert_eq!(
-            evaluate_metadata_watches(
-                &database.database,
-                repository.repository_id,
-                &current,
-                fixed_now(),
-            )
-            .await?,
+            evaluate_metadata_watches(&database.database, repository.repository_id, fixed_now(),)
+                .await?,
             WatchEvaluation::Queued { requests: 1 },
             "revision {position} must queue one request"
         );

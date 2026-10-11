@@ -33,6 +33,13 @@
 - [x] 7.1 RED: add `watch_observer.rs::failing_repositories_do_not_starve_a_healthy_one` (batch repositories that answer 404 are older than a healthy changed one) and `the_first_pass_runs_shortly_after_boot_not_a_full_interval_later`; they fail because selection rotates only on success and the first pass waits a full interval.
 - [x] 7.2 GREEN: add `repository_metadata.observe_attempted_at` (`schema.sql` in place), order the selection by it, record it after every attempt except a withheld budget, and start the first pass after at most five seconds.
 
-## 8. Final gate
+## 8. Evaluation converges from stored state (review fix, R2-08 b and c)
 
-- [ ] 8.1 Run the full local gate and `openspec validate --all --strict`.
+- [x] 8.1 RED: add `watch_observer.rs::a_not_modified_pass_queues_the_request_a_crashed_evaluation_left_behind` (a source revision committed without its evaluation, then an observer pass answered with 304); it fails because the 304 path never evaluates watches.
+- [x] 8.2 GREEN: `evaluate_metadata_watches` reads the attributes and README revision from the stored projection and its matching raw revision instead of a caller's body (a deliberate break of its signature; every call site is updated), and `observe_repository` calls it after a not-modified answer.
+- [x] 8.3 RED: add `observe_flow.rs::the_readme_request_is_gated_by_the_budget_the_repository_response_reported`; it fails because the README request is made without `ledger.acquire`.
+- [x] 8.4 GREEN: `record_fresh_repository` acquires before the README request and returns `ObserveError::RateLimited`; `observe_repository` reports it as `ObserveOutcome::RateLimited` and the action route as a provider failure.
+
+## 9. Final gate
+
+- [ ] 9.1 Run the full local gate and `openspec validate --all --strict`.

@@ -162,13 +162,7 @@ pub async fn queue_analysis_request(
     .await?;
     let changed = body("after");
     apply_fresh_body(&database.database, repository.repository_id, &changed, None).await?;
-    evaluate_metadata_watches(
-        &database.database,
-        repository.repository_id,
-        &changed,
-        fixed_now(),
-    )
-    .await?;
+    evaluate_metadata_watches(&database.database, repository.repository_id, fixed_now()).await?;
     Ok(repository.repository_id)
 }
 

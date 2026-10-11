@@ -144,8 +144,8 @@ async fn observe_repository_end_to_end_via_wiremock() -> Result<(), Box<dyn std:
     );
     assert_eq!(
         ledger.remaining(&token),
-        Some(4999),
-        "the shared ledger must ingest the response rate headers"
+        Some(4998),
+        "the shared ledger must ingest the response rate headers and spend one unit on the README"
     );
 
     let second = observe_repository(
@@ -180,6 +180,63 @@ async fn observe_repository_end_to_end_via_wiremock() -> Result<(), Box<dyn std:
     .await?;
     assert_eq!(requests_after_redelivery, 1);
     assert_eq!(ledger.remaining(&token), Some(4998));
+
+    server.verify().await;
+    database.cleanup().await?;
+    Ok(())
+}
+
+#[tokio::test]
+async fn the_readme_request_is_gated_by_the_budget_the_repository_response_reported()
+-> Result<(), Box<dyn std::error::Error>> {
+    let database = TestDatabase::create().await?;
+    let server = MockServer::start().await;
+    let reset = time::OffsetDateTime::now_utc().unix_timestamp() + 3600;
+    // The repository answer leaves one request, which is the reserve floor: the README call
+    // would spend the reserve, so the ledger must withhold it.
+    Mock::given(method("GET"))
+        .and(path(REPO_PATH))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .insert_header("x-ratelimit-limit", "5000")
+                .insert_header("x-ratelimit-remaining", "1")
+                .insert_header("x-ratelimit-reset", reset.to_string().as_str())
+                .set_body_string(FRESH_BODY)
+                .insert_header("etag", r#"W/"v1""#),
+        )
+        .mount(&server)
+        .await;
+    Mock::given(method("GET"))
+        .and(path("/repos/acme/widgets/readme"))
+        .respond_with(ResponseTemplate::new(200).set_body_string("# Widgets\n"))
+        .expect(0)
+        .mount(&server)
+        .await;
+    let gateway = ReqwestGithubApi::for_base_url(&server.uri())?;
+    let ledger = RateLimitLedger::new();
+    let token = TokenRef::from_label("account-readme-budget");
+
+    let outcome = observe_repository(
+        &database.database,
+        &gateway,
+        &ledger,
+        &token,
+        &OwnerName {
+            owner: "acme".to_owned(),
+            name: "widgets".to_owned(),
+        },
+        time::OffsetDateTime::from_unix_timestamp(1_767_225_600)?,
+    )
+    .await?;
+
+    assert!(
+        matches!(outcome, ObserveOutcome::RateLimited { .. }),
+        "the README call must wait for the budget, got {outcome:?}"
+    );
+    let stored: i64 = sqlx::query_scalar("select count(*) from github_catalog.repository_metadata")
+        .fetch_one(database.database.pool())
+        .await?;
+    assert_eq!(stored, 0, "a withheld README call applies nothing");
 
     server.verify().await;
     database.cleanup().await?;

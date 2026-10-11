@@ -130,13 +130,8 @@ async fn metadata_delta_queues_and_dispatches_one_analysis_request()
     let dispatch = dispatch_due_repository_analysis(&database.database, fixed_now()).await?;
     assert!(matches!(dispatch, AnalysisDispatch::Pending { .. }));
     assert_eq!(
-        evaluate_metadata_watches(
-            &database.database,
-            repository.repository_id,
-            &repository_body("changed description"),
-            fixed_now(),
-        )
-        .await?,
+        evaluate_metadata_watches(&database.database, repository.repository_id, fixed_now(),)
+            .await?,
         WatchEvaluation::Unchanged
     );
     assert_eq!(
@@ -202,7 +197,6 @@ async fn matching_completion_resolves_the_pending_request_once()
     ratatoskr_github_catalog::evaluate_metadata_watches(
         &database.database,
         repository.repository_id,
-        &changed,
         fixed_now(),
     )
     .await?;

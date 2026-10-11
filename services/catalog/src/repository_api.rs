@@ -276,7 +276,9 @@ async fn execute_catalog_action(
         Ok(AppliedOutcome::Created | AppliedOutcome::Updated) => {
             RepositoryMetadataOutcome::Succeeded
         }
-        Err(ObserveError::Provider(_)) => return Ok(metadata_provider_failure(request.mode)),
+        Err(ObserveError::Provider(_) | ObserveError::RateLimited { .. }) => {
+            return Ok(metadata_provider_failure(request.mode));
+        }
         Err(_) => return Ok(metadata_persistence_failure(request.mode)),
     };
     if request.mode == RepositoryActionCapability::Star {

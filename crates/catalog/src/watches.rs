@@ -18,7 +18,6 @@ use crate::database::{Database, PersistenceError};
 use crate::envelopes::{
     ANALYSIS_REQUESTED_SUBJECT, EnvelopeBuildError, analysis_requested_envelope,
 };
-use crate::provider::ProviderRepositoryBody;
 
 const REQUESTED_CONTRACT: &str = "repository_analysis";
 const COMPLETED_SUBJECT: &str = "evt.knowledge.repository_analysis.completed.v1";
@@ -210,13 +209,19 @@ pub async fn set_repository_analysis_watch_enabled(
     Ok(())
 }
 
-/// Queues all enabled watches whose metadata checkpoint differs from this body.
+/// Queues all enabled watches whose metadata checkpoint differs from the stored revision.
+///
+/// The attributes and README evidence come from the stored projection and its matching raw
+/// revision, never from a caller's body, so the evaluation converges from committed state: a
+/// process that died between committing a source revision and evaluating its watches is repaired
+/// by the next call, including one that follows a not-modified answer.
 ///
 /// The request is durable but only the dispatcher writes it to the external outbox.
 ///
 /// # Errors
 ///
-/// Returns [`WatchError`] when metadata cannot form the shared contract or persistence fails.
+/// Returns [`WatchError`] when the stored revision cannot form the shared contract or persistence
+/// fails.
 #[expect(
     clippy::too_many_lines,
     reason = "one transaction must lock watches, allocate paced due times, enqueue requests, and advance their checkpoints together"
@@ -224,15 +229,10 @@ pub async fn set_repository_analysis_watch_enabled(
 pub async fn evaluate_metadata_watches(
     database: &Database,
     repository_id: Uuid,
-    body: &ProviderRepositoryBody,
     now: OffsetDateTime,
 ) -> Result<WatchEvaluation, WatchError> {
-    let attributes = analysis_attributes(body)?;
-    let attributes_digest = digest_value(&attributes)?;
     let repository = RepositoryId::parse(&repository_id.to_string())
         .map_err(|_| WatchError::InvalidStoredIdentity)?;
-    let provider_id =
-        u64::try_from(body.provider_repository_id).map_err(|_| WatchError::InvalidMetadata)?;
     let mut tx = database
         .pool()
         .begin()
@@ -247,6 +247,23 @@ pub async fn evaluate_metadata_watches(
     .await
     .map_err(PersistenceError::Query)?
     .ok_or(WatchError::MissingMetadata)?;
+    let stored_payload: serde_json::Value = sqlx::query_scalar(
+        "select payload from github_catalog.repository_metadata_revisions
+         where repository_id = $1 and content_hash = $2
+         order by observed_at desc, revision_id desc limit 1",
+    )
+    .bind(repository_id)
+    .bind(&metadata_hash)
+    .fetch_optional(&mut *tx)
+    .await
+    .map_err(PersistenceError::Query)?
+    .ok_or(WatchError::MissingMetadata)?;
+    let stored: StoredBody =
+        serde_json::from_value(stored_payload).map_err(|_| WatchError::InvalidMetadata)?;
+    let attributes = analysis_attributes(&stored)?;
+    let attributes_digest = digest_value(&attributes)?;
+    let provider_id =
+        u64::try_from(stored.provider_repository_id).map_err(|_| WatchError::InvalidMetadata)?;
     let source_revision = RepositoryAnalysisRevision {
         attributes_digest: attributes_digest.clone(),
         readme: stored_readme_revision(stored_readme)?,
@@ -515,9 +532,17 @@ fn stored_readme_revision(stored: Option<serde_json::Value>) -> Result<ReadmeRev
     }
 }
 
-fn analysis_attributes(
-    body: &ProviderRepositoryBody,
-) -> Result<RepositoryAnalysisAttributes, WatchError> {
+/// The fields of a stored raw revision (`metadata::normalized_payload`) that form the analysis
+/// attributes.
+#[derive(serde::Deserialize)]
+struct StoredBody {
+    provider_repository_id: i64,
+    full_name: String,
+    description: Option<String>,
+    language: Option<String>,
+}
+
+fn analysis_attributes(body: &StoredBody) -> Result<RepositoryAnalysisAttributes, WatchError> {
     let description = body
         .description
         .as_deref()
