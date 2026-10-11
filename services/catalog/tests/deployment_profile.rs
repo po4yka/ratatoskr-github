@@ -130,7 +130,7 @@ async fn the_shipped_example_loads_and_enables_the_bus_and_the_reader_route()
 
 const ROLE_FILE: &str = "deploy/postgres/role.sql";
 
-/// XR-021 CONTRACTS.md R3-11: the target runs one PostgreSQL database, `ratatoskr`, on port 5432,
+/// XR-021 CONTRACTS.md R3-11: the target runs one `PostgreSQL` database, `ratatoskr`, on port 5432,
 /// and the service connects to it as its own role, which a checked-in file creates.
 #[test]
 fn the_example_names_the_shared_database_and_the_role_file_exists()

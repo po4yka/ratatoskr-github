@@ -33,7 +33,7 @@ const KNOWLEDGE_PRODUCER: &str = "ratatoskr-knowledge";
 const VAULT_PRODUCER: &str = "ratatoskr-vault";
 
 /// The only inbox namespace this identity may subscribe to (XR-021 CONTRACTS.md R3-01). Every
-/// JetStream reply, acknowledgement and fetched message arrives on it, so no other identity's
+/// `JetStream` reply, acknowledgement and fetched message arrives on it, so no other identity's
 /// deliveries are readable and the reviewed stanza allows `_INBOX_github.>` and nothing broader.
 const INBOX_PREFIX: &str = "_INBOX_github";
 
