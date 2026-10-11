@@ -15,6 +15,7 @@
 use std::net::TcpListener;
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
+use std::sync::Mutex;
 use std::time::Duration;
 
 use uuid::Uuid;
@@ -73,6 +74,12 @@ impl Drop for AuthorizedBroker {
     }
 }
 
+/// Held from picking a port until the broker listens on it. Tests in one binary run in parallel,
+/// and a port is only taken once its server is listening, so without this two brokers pick the
+/// same port, the second `nats-server` exits on the bind error, and its test connects to the
+/// first test's broker with the wrong identity (an authorization violation).
+static START: Mutex<()> = Mutex::new(());
+
 /// A free port in the range reserved for this repository's private test servers.
 fn free_port() -> Result<u16, Box<dyn std::error::Error>> {
     (57_710..=57_719)
@@ -126,6 +133,9 @@ impl AuthorizedBroker {
 
     pub fn start_with(options: &BrokerOptions) -> Result<Self, Box<dyn std::error::Error>> {
         let directory = tempdir::Directory::create(&format!("authorized-bus-{}", Uuid::now_v7()))?;
+        let _starting = START
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         let port = free_port()?;
         let admin = nkeys::KeyPair::new_user();
         let github = nkeys::KeyPair::new_user();
