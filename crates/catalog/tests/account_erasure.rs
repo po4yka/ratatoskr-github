@@ -470,32 +470,6 @@ async fn a_reused_operation_id_for_a_different_owner_is_a_mismatch()
 }
 
 #[tokio::test]
-async fn revoke_treats_404_as_already_revoked() -> Result<(), Box<dyn std::error::Error>> {
-    let fixture = oauth_fixture(63).await?;
-    let server = revoke_answering(404, 1).await.map_err(|_| "mock server")?;
-    let github = ReqwestGithubApi::for_base_url(&server.uri())?;
-    let request = AccountErasureRequested {
-        operation_id: OperationId::new_v7(),
-        extensions: Extensions::default(),
-    };
-
-    let acknowledgement = erase_account(
-        &fixture.database.database,
-        &github,
-        Some(&fixture.key),
-        Some(&fixture.app),
-        fixture.tenant,
-        &request,
-    )
-    .await?;
-
-    assert_eq!(acknowledgement.outcome, AccountErasureOutcome::Verified);
-    server.verify().await;
-    fixture.database.cleanup().await?;
-    Ok(())
-}
-
-#[tokio::test]
 async fn ledger_row_commits_atomically_with_owner_data() -> Result<(), Box<dyn std::error::Error>> {
     let fixture = oauth_fixture(64).await?;
     sqlx::query(

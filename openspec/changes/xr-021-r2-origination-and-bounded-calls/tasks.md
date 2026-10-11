@@ -15,8 +15,8 @@
 
 ## 4. Revocation confirmation (R2-08 e)
 
-- [ ] 4.1 RED: add the five `revoke_*` cases in `account_erasure.rs`; `revoke_404_with_a_live_token_is_incomplete` and the probe-failure case fail because every 404 is success.
-- [ ] 4.2 GREEN: probe `GET /user` after a 404 and update the code comment and the README sentence.
+- [x] 4.1 RED: add the five `revoke_*` cases in `account_erasure.rs`; `revoke_404_with_a_live_token_is_incomplete` and the probe-failure case fail because every 404 is success.
+- [x] 4.2 GREEN: probe `GET /user` after a 404 and update the code comment and the README sentence.
 
 ## 5. Relay health reaches readiness (R2-03, R2-04 rule 2)
 

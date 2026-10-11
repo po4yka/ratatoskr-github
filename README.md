@@ -335,6 +335,8 @@ configuration. On an OAuth credential issued by another app, a PAT, a missing
 OAuth configuration, or a provider error, local erasure still proceeds and the
 acknowledgement truthfully reports incomplete external grant revocation.
 
+GitHub's reference documents only 204 and 422 for the grant deletion. The revocation counts as verified on a 204, or on a 404 only when `GET /user` with the same access token then answers 401 (the token is dead, so the grant is gone); a 404 followed by any other probe answer or a probe failure, a 422 and every other status are incomplete.
+
 Telegram, Platform, Knowledge, and Vault never receive the plaintext GitHub token.
 
 ## Commands and events

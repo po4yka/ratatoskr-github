@@ -51,13 +51,32 @@ impl ReqwestGithubApi {
             .await
             .map_err(ProviderError::Transport)?;
         match response.status() {
+            reqwest::StatusCode::NO_CONTENT => Ok(()),
             // GitHub's reference lists only 204 and 422 (validation failed, or the endpoint has
-            // been spammed) for this operation and documents no already-revoked status. A 404
-            // means the token has no grant, which is the state erasure wants, so a retry after a
-            // crash between this call and the commit converges. 422 stays an error: it also
-            // covers throttling and cannot be read as revoked. The 404 is undocumented provider
-            // behavior (XR-021 CONTRACTS.md S12).
-            reqwest::StatusCode::NO_CONTENT | reqwest::StatusCode::NOT_FOUND => Ok(()),
+            // been spammed) for this operation, so a 404 is not documented as "already revoked".
+            // It is accepted only when the same access token is then refused by the API (401):
+            // the dead token, not the undocumented status, is what proves the grant is gone.
+            // Any other probe answer or a probe failure leaves the revocation unconfirmed.
+            reqwest::StatusCode::NOT_FOUND => self.confirm_token_is_dead(access_token).await,
+            status => Err(ProviderError::UnexpectedStatus {
+                status: status.as_u16(),
+            }),
+        }
+    }
+
+    async fn confirm_token_is_dead(
+        &self,
+        access_token: &SecretString,
+    ) -> Result<(), ProviderError> {
+        let probe = self
+            .http
+            .get(format!("{}/user", self.base_url))
+            .bearer_auth(access_token.expose_secret())
+            .send()
+            .await
+            .map_err(ProviderError::Transport)?;
+        match probe.status() {
+            reqwest::StatusCode::UNAUTHORIZED => Ok(()),
             status => Err(ProviderError::UnexpectedStatus {
                 status: status.as_u16(),
             }),
