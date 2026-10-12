@@ -218,7 +218,7 @@ A later failure does not roll back an earlier successful external action. Respon
 
 GitHub Catalog stores desired state; Git Vault owns actual storage state.
 
-Catalog uses `ratatoskr-backup-contracts` at immutable commit `ad16855c4e7f3d52cd118274faa3b8f3ab4da576`. A durable trailing debounce coalesces mode/star-governance changes, then atomically writes an immutable policy version and a complete `cmd.vault.backup_policy.apply_requested.v1` command envelope to the outbox. Vault feedback arrives as `evt.vault.backup_policy.acknowledged.v1`; accepted means only that Vault accepted the requested policy version, not that a mirror, retention action, or restore succeeded.
+Catalog uses `ratatoskr-backup-contracts` at immutable commit `d98967b7b7ee80442c93ef4657140068955c8f61`. A durable trailing debounce coalesces mode/star-governance changes, then atomically writes an immutable policy version and a complete `cmd.vault.backup_policy.apply_requested.v1` command envelope to the outbox. Vault feedback arrives as `evt.vault.backup_policy.acknowledged.v1`; accepted means only that Vault accepted the requested policy version, not that a mirror, retention action, or restore succeeded.
 
 Planned policy levels:
 
