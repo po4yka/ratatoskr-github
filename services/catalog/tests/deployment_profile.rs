@@ -80,6 +80,14 @@ async fn the_shipped_example_loads_and_enables_the_bus_and_the_reader_route()
     assert_eq!(configuration.watch.observe_interval_seconds, 3600);
     assert_eq!(configuration.watch.batch, 10);
     assert_eq!(configuration.provider.timeout_ms, 30_000);
+    assert_eq!(
+        configuration.provider.base_url, "https://api.github.com",
+        "an example that leaves the origin unset targets GitHub"
+    );
+    assert!(
+        text.contains("# RATATOSKR__PROVIDER__BASE_URL=https://api.github.com"),
+        "the example names the provider origin key and its default"
+    );
     for key in [
         "RATATOSKR__CREDENTIALS__ENCRYPTION_KEY_HEX",
         "RATATOSKR__CREDENTIALS__KEY_VERSION",

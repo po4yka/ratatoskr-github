@@ -12,6 +12,8 @@ RATATOSKR__API__LISTEN_ADDRESS=127.0.0.1:8092
 RATATOSKR__STORAGE__DATABASE_URL=postgres://ratatoskr_github:CHANGE-ME@127.0.0.1:5432/ratatoskr
 
 # The provider. The default is https://api.github.com; every call is bounded by a 5 second connect timeout and this whole-exchange timeout (1000 to 120000).
+# The origin is the one place the service and the reconnect-pat and shadow-legacy commands reach the provider: an HTTPS origin (GitHub Enterprise) or, for a synthetic test, a numeric loopback HTTP origin such as http://127.0.0.1:PORT. Nothing else is accepted.
+# RATATOSKR__PROVIDER__BASE_URL=https://api.github.com
 RATATOSKR__PROVIDER__TIMEOUT_MS=30000
 
 # Encrypted storage of replacement PATs and OAuth tokens. SECRET: 64 hexadecimal characters (32 bytes). Both keys are set together or neither is.

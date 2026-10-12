@@ -188,8 +188,7 @@ async fn shadow_legacy(config: &Config, source_id: &str) -> Result<(), ProcessEr
             let credential = load_active_pat(&database, account_id, &key)
                 .await
                 .map_err(ProcessError::Credential)?;
-            let gateway =
-                provider_gateway(config, "https://api.github.com")?.authenticated(credential);
+            let gateway = provider_gateway(config)?.authenticated(credential);
             let token = TokenRef::from_label(account_id.to_string());
             let _full = run_full_snapshot(&database, &gateway, &ledger, &token, account_id)
                 .await
@@ -229,7 +228,7 @@ async fn serve(config: Config) -> Result<(), ProcessError> {
     let api_listener = tokio::net::TcpListener::bind(config.api.listen_address)
         .await
         .map_err(ProcessError::Bind)?;
-    let provider = provider_gateway(&config, &config.provider.base_url)?;
+    let provider = provider_gateway(&config)?;
     let observer = WatchObserver::new(&config.watch, provider.clone());
     let mut repository_api = RepositoryApiState::new(
         database.clone(),
@@ -280,7 +279,7 @@ async fn register_replacement_pat(config: &Config, account_id: &str) -> Result<(
     let pat = read_replacement_pat()?;
     let database = connect_database(config).await?;
     let result = async {
-        let gateway = provider_gateway(config, "https://api.github.com")?;
+        let gateway = provider_gateway(config)?;
         let authenticated = gateway
             .authenticate_pat(pat.expose_secret())
             .await
@@ -304,9 +303,10 @@ async fn register_replacement_pat(config: &Config, account_id: &str) -> Result<(
     result
 }
 
-/// A provider gateway bounded by the configured whole-exchange timeout.
-fn provider_gateway(config: &Config, base_url: &str) -> Result<ReqwestGithubApi, ProcessError> {
-    ReqwestGithubApi::for_base_url(base_url)
+/// The provider gateway every command and the server share: the configured provider origin
+/// (`RATATOSKR__PROVIDER__BASE_URL`), bounded by the configured whole-exchange timeout.
+fn provider_gateway(config: &Config) -> Result<ReqwestGithubApi, ProcessError> {
+    ReqwestGithubApi::for_base_url(&config.provider.base_url)
         .and_then(|gateway| gateway.with_timeout(Duration::from_millis(config.provider.timeout_ms)))
         .map_err(ProcessError::Provider)
 }

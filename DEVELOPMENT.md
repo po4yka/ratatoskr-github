@@ -32,7 +32,8 @@ RATATOSKR__INTERNAL__READER_SERVICE_SECRET=<shared bearer secret for the README 
 `RATATOSKR__WATCH__OBSERVE_INTERVAL_SECONDS` (default 3600, `0` disables the observer) and `RATATOSKR__WATCH__BATCH` (default 10) drive the periodic observer. `deploy/systemd/github.conf.example` carries every setting a deployment needs; `services/catalog/tests/deployment_profile.rs` loads it, so it cannot drift.
 
 Both listeners must remain distinct loopback sockets. Provider HTTP is accepted
-only for a numeric loopback origin in synthetic tests. The database URL and
+only for a numeric loopback origin in synthetic tests. The server and the `reconnect-pat` and
+`shadow-legacy` commands all reach the provider through `RATATOSKR__PROVIDER__BASE_URL`. The database URL and
 encryption key are secrets and must come from the deployment secret store, not
 arguments or logs.
 
