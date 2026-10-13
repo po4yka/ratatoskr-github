@@ -17,4 +17,4 @@
 
 ## 5. Close
 
-- [ ] 5.1 Run the repository gate and `openspec validate --all --strict`, archive the change, and read the hosted CI of the pushed commit; this task has no failing test because it is verification.
+- [x] 5.1 Run the repository gate and `openspec validate --all --strict` and archive the change; the hosted CI of the pushed commit is read by the coordinator after the push; this task has no failing test because it is verification.
