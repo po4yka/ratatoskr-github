@@ -429,6 +429,8 @@ A watch stores:
 
 Watch evaluation uses catalog observations and publishes events. It does not send Telegram messages directly.
 
+For a metadata-delta analysis watch, the evaluation queues one analysis request per new metadata revision and advances the watch checkpoint in the same transaction. A request is `pending` from its dispatch until Knowledge sends a matching terminal fact. A `pending` request has no deadline and no re-dispatch: nothing in the Catalog ages or fails it, and Knowledge may keep it pending for as long as a provider credential, balance or model needs an operator (XR-021 R6-01). A metadata change during the wait queues a second request and leaves the first pending. A retryable `failed` fact is terminal, and the request is analysed again only after the repository's metadata changes.
+
 ## 14. Repository analysis integration
 
 Catalog requests analysis from Knowledge using repository metadata and README references.

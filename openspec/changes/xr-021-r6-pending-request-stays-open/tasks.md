@@ -13,7 +13,7 @@
 
 ## 4. Documentation
 
-- [ ] 4.1 Add the no-deadline, no-re-dispatch sentence to `docs/DOMAIN.md` (repository analysis request) and `docs/ARCHITECTURE.md` (watch loop); this task has no failing test because it is documentation.
+- [x] 4.1 Add the no-deadline, no-re-dispatch sentence to `docs/DOMAIN.md` (repository analysis request) and `docs/ARCHITECTURE.md` (watch loop); this task has no failing test because it is documentation.
 
 ## 5. Close
 

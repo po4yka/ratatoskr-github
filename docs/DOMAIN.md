@@ -12,7 +12,11 @@
 - **Watch rule:** user-owned enabled/paused metadata-delta policy for one repository. It records the
   last evaluated metadata checkpoint and names `repository_analysis` as its downstream action.
 - **Repository analysis request:** Catalog-owned outstanding-work record. `queued` and `pending` are
-  visible still-indexing states; only Knowledge can resolve it with a matching terminal fact.
+  visible still-indexing states; only Knowledge can resolve it with a matching terminal fact. A
+  `pending` request has no deadline and is never dispatched again, so Knowledge may keep it pending
+  for as long as a provider credential, balance or model needs an operator (XR-021 R6-01). A
+  retryable `failed` fact is terminal: the request is analysed again only after the repository's
+  metadata changes.
 - **Backup policy:** desired Vault target, LFS/auxiliary options, retention, pinning.
 
 ## Invariants
