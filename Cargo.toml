@@ -54,12 +54,12 @@ tracing-subscriber = { version = "0.3.23", default-features = false, features = 
 ] }
 uuid = { version = "1.24.1", features = ["v7"] }
 wiremock = "0.6.5"
-ratatoskr-backup-contracts = { git = "https://github.com/po4yka/ratatoskr-contracts.git", rev = "a9289e27bcf53f496b5917889580965d97ff2358" }
-ratatoskr-event-envelope = { git = "https://github.com/po4yka/ratatoskr-contracts.git", rev = "a9289e27bcf53f496b5917889580965d97ff2358" }
-ratatoskr-error-contracts = { git = "https://github.com/po4yka/ratatoskr-contracts.git", rev = "a9289e27bcf53f496b5917889580965d97ff2358" }
-ratatoskr-github-contracts = { git = "https://github.com/po4yka/ratatoskr-contracts.git", rev = "a9289e27bcf53f496b5917889580965d97ff2358" }
-ratatoskr-identifiers = { git = "https://github.com/po4yka/ratatoskr-contracts.git", rev = "a9289e27bcf53f496b5917889580965d97ff2358" }
-ratatoskr-operation-contracts = { git = "https://github.com/po4yka/ratatoskr-contracts.git", rev = "a9289e27bcf53f496b5917889580965d97ff2358" }
+ratatoskr-backup-contracts = { git = "https://github.com/po4yka/ratatoskr-contracts.git", rev = "2c726027da79e0e899ad482afead0a2000b03e61" }
+ratatoskr-event-envelope = { git = "https://github.com/po4yka/ratatoskr-contracts.git", rev = "2c726027da79e0e899ad482afead0a2000b03e61" }
+ratatoskr-error-contracts = { git = "https://github.com/po4yka/ratatoskr-contracts.git", rev = "2c726027da79e0e899ad482afead0a2000b03e61" }
+ratatoskr-github-contracts = { git = "https://github.com/po4yka/ratatoskr-contracts.git", rev = "2c726027da79e0e899ad482afead0a2000b03e61" }
+ratatoskr-identifiers = { git = "https://github.com/po4yka/ratatoskr-contracts.git", rev = "2c726027da79e0e899ad482afead0a2000b03e61" }
+ratatoskr-operation-contracts = { git = "https://github.com/po4yka/ratatoskr-contracts.git", rev = "2c726027da79e0e899ad482afead0a2000b03e61" }
 sha2 = "0.10.9"
 
 [workspace.lints.rust]
